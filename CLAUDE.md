@@ -25,8 +25,29 @@
 
 ## Agent Configuration
 
-**Active agents:** Lead, Planner, Architect, Backend, Frontend, QA, Scribe  
-**Skip agents:** Security  
+**Active agents:** DataAnalyst, Lead, Planner, Architect, Backend, Frontend, QA, Scribe  
+**Skip agents:** Security
+
+### Lead — Session Flow
+
+**Phase 1 — Data Analysis (blocking)**
+
+Lead spawns **DataAnalyst** as the first action of every session. Lead passes it:
+
+- Path to `annotations.tsv`
+- Path to the `imageAlignedLD/` scene directories
+- Path to `agents/data-analyst.md` (the agent's own spec)
+
+Lead waits for DataAnalyst to return. DataAnalyst is considered done when both of the following exist and are non-empty:
+
+- `data-analyst-report.md`
+- `low_light_manifest.csv`
+
+**No other agent is spawned and no other task begins until Phase 1 is complete.**
+
+**Phase 2 — Downstream work**
+
+Once `low_light_manifest.csv` exists, Lead resumes normal orchestration. All agents that build or train on image pairs must read their pairs exclusively from `low_light_manifest.csv` — never from raw annotations or their own re-derived logic.
 
 ---
 
@@ -50,12 +71,15 @@ Compute in **float64** to avoid accumulation errors. Normalize consistently (0�
 
 Dataset structure: 102 scene directories in `imageAlignedLD/`, each containing time-of-day captures of the same scene. Annotations: 40 attributes per image (score + confidence) in `annotations.tsv`.
 
-**Pair selection strategy — many-to-one mapping:**
-- **Day targets:** `daylight > 0.8` from each scene
-- **Low-light inputs (not strictly night):** The training inputs are **low-light images** — a broader category than night-time. Always include `night > 0.8` images, but also analyze all 40 annotations to identify other low-visibility conditions. Suggested attributes: `dark`, `dawndusk`, `sunrisesunset`, `gloomy`, `storm`, `fog` — but do not limit to these. Use annotation distributions to find the best thresholds.
-- **Map multiple low-light images → one day target** per scene to improve generalization.
-- Check `annotations.tsv` attribute distributions to calibrate thresholds.
-- **Document thoroughly:** Record every data preparation step — attribute analysis, threshold selection rationale, which images were included/excluded, and the final input→output pair counts per scene. This documentation should be reproducible so anyone can reconstruct the exact dataset from the raw annotations.
+**Pair selection strategy — delegated to DataAnalyst:**
+
+All low-light classification and pair selection is performed by the **DataAnalyst** agent (see [`agents/data-analyst.md`](agents/data-analyst.md)). The output of that analysis is `low_light_manifest.csv`, which is the **sole authoritative source** of training pairs. Backend reads this file directly — do not re-derive pairs from annotations.
+
+Summary of DataAnalyst's approach (details in report):
+- **Day targets:** `daylight > 0.8` per scene (DataAnalyst validates and may adjust)
+- **Low-light inputs:** determined by full analysis of all 40 attributes, not just `night`. Thresholds are chosen with explicit distribution-based justification.
+- **Many-to-one mapping:** multiple low-light images per scene may map to one day target.
+- **Excluded scenes:** any scene missing a valid daylight or low-light image is dropped and documented.
 
 **Final evaluation pair (in repo root):** `night.png` (input) / `day.png` (ground truth). These are used for a **single final evaluation run only** — never for training or model testing. The model's grade is determined by channel-wise MSE on this pair. Additional hidden pairs may also be used.
 
