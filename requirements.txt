@@ -1,8 +1,7 @@
-torch==2.10.0
-torchvision==0.25.0
-gradio==6.9.0
+torch
+torchvision
 numpy
 Pillow
-scikit-image==0.26.0
+scikit-image
 huggingface_hub
 pandas
