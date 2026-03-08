@@ -116,9 +116,20 @@ Created training pipeline scripts:
 | Crop size | 128×128 | CPU-feasible (~90s/epoch); full resolution used at inference |
 | Initial config (killed) | base_filters=32, crop=256 | ~20 min/epoch on CPU — too slow |
 
-### Open Tasks
+### Completed This Session (continued)
 
-- Upload `checkpoints/best.pt` to HF Hub model repo
-- Connect model to `app.py` (flip `MODEL_LOADED=True`, wire checkpoint loader)
-- Run `enhance.py --input night.png --reference day.png` on final evaluation pair
-- Fix HF Space: lightweight `requirements.txt` (remove torch until model wired) → rebuild
+- `checkpoints/best.pt` uploaded to `tyakovenko/night-to-day-enhancement-model` (HF Hub)
+- `app.py` wired to real U-Net checkpoint — model loads from HF Hub at Space startup
+- HF Space live at `https://tyakovenko-night-to-day-enhancement.hf.space` (HTTP 200)
+- GitHub pushed: commits `bfedcee`, `961aa28`, `5db459e`
+
+### Open Tasks / TODOs
+
+- **[BUG] Fix Space crash on Enhance with real images**
+  - Symptom: uploading `night.jpg` / `day.jpg` and pressing Enhance causes an error
+  - Likely cause: U-Net has 4 MaxPool layers → input dimensions must be divisible by 16. Images with non-multiple-of-16 dimensions (e.g. 481×640) cause skip-connection shape mismatches in the decoder
+  - Fix: pad input to nearest multiple of 16 before inference, then crop output back to original size
+  - Location to fix: `enhance_image()` in `app.py` and `enhance()` in `enhance.py`
+
+- Run `enhance.py --input night.png --reference day.png` once eval pair is available (final graded MSE)
+- Consider additional training epochs or LOL dataset fine-tuning to push MSE lower
