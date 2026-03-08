@@ -15,23 +15,35 @@ from skimage.metrics import structural_similarity as ssim_fn
 from model import UNet
 
 MODEL_REPO = "tyakovenko/night-to-day-enhancement-model"
-BASE_FILTERS = 16
 
-def load_model():
-    """Download checkpoint from HF Hub and load U-Net weights."""
+# Lazy model state — loaded on first inference request, not at import time.
+# This prevents a DNS/network failure during Space container init from
+# crashing the app before the UI even starts.
+_model = None
+_model_loaded = False
+_model_attempted = False
+
+
+def get_model():
+    """Load model on first call; return cached instance on subsequent calls."""
+    global _model, _model_loaded, _model_attempted
+    if _model_attempted:
+        return _model, _model_loaded
+    _model_attempted = True
     try:
         ckpt_path = hf_hub_download(repo_id=MODEL_REPO, filename="best.pt", repo_type="model")
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        model = UNet(base_filters=BASE_FILTERS)
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        base_filters = ckpt.get("args", {}).get("base_filters", 16)
+        model = UNet(base_filters=base_filters)
         model.load_state_dict(ckpt["model"])
         model.eval()
-        print(f"Model loaded from {MODEL_REPO} (epoch {ckpt.get('epoch', '?')}, val MSE {ckpt.get('val_mse', '?'):.4f})")
-        return model, True
+        print(f"Model loaded from {MODEL_REPO} "
+              f"(epoch {ckpt.get('epoch', '?')}, val MSE {ckpt.get('val_mse', 0):.4f})")
+        _model, _model_loaded = model, True
     except Exception as e:
         print(f"Model load failed: {e}")
-        return None, False
-
-_model, MODEL_LOADED = load_model()
+        _model, _model_loaded = None, False
+    return _model, _model_loaded
 
 
 # ── Metrics ────────────────────────────────────────────────────────────────────
@@ -97,7 +109,8 @@ def enhance_image(input_img: np.ndarray) -> np.ndarray:
     if input_img is None:
         return None
 
-    if MODEL_LOADED and _model is not None:
+    model, model_loaded = get_model()
+    if model_loaded and model is not None:
         t = torch.from_numpy(
             input_img.astype(np.float32) / 255.0
         ).permute(2, 0, 1).unsqueeze(0)          # 1CHW
@@ -106,7 +119,7 @@ def enhance_image(input_img: np.ndarray) -> np.ndarray:
         # Reflect-pad, run inference, then crop back to original dimensions.
         t, (h_orig, w_orig) = pad_to_multiple(t, multiple=16)
         with torch.no_grad():
-            out = _model(t)
+            out = model(t)
         out = out[:, :, :h_orig, :w_orig]
 
         result = out.squeeze(0).permute(1, 2, 0).numpy()  # HWC
@@ -132,9 +145,10 @@ def run(input_img, ref_img):
 
     enhanced = enhance_image(input_img)
 
+    _, model_loaded = get_model()
     model_status = (
         "✅ U-Net loaded (epoch 22, val MSE 0.0290) — tyakovenko/night-to-day-enhancement-model"
-        if MODEL_LOADED
+        if model_loaded
         else "⚠️ Model unavailable — showing gamma-brightened placeholder"
     )
 
