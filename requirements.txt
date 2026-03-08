@@ -4,3 +4,4 @@ Pillow
 scikit-image
 huggingface_hub
 pandas
+pytorch-msssim

@@ -1,0 +1,60 @@
+
+=================================================================
+  Low-Light Enhancement — v2 Training (L1 + MS-SSIM + VGG)
+=================================================================
+  Device:              cpu
+  Init checkpoint:     checkpoints/best_extended.pt
+  Manifest:            /home/taya/night-to-day-imgConversion/extended_manifest.csv
+  Epochs:              20
+  Batch size:          4
+  Crop size:           176×176
+  LR:                  1e-05
+  Perceptual weight:   0.0
+=================================================================
+
+Building train/val splits (scene-level) from extended manifest ...
+  Train: 1515 pairs  (TA=1095, LOL=420)
+  Val:    161 pairs  (TA=81,  LOL=80)
+
+Pre-fetching 2266 unique images from HF Hub ...
+  100/2266  (101 img/s  ETA 21s)
+  200/2266  (123 img/s  ETA 17s)
+  300/2266  (128 img/s  ETA 15s)
+  400/2266  (133 img/s  ETA 14s)
+  500/2266  (138 img/s  ETA 13s)
+  600/2266  (141 img/s  ETA 12s)
+  700/2266  (138 img/s  ETA 11s)
+  800/2266  (140 img/s  ETA 10s)
+  900/2266  (142 img/s  ETA 10s)
+  1000/2266  (142 img/s  ETA 9s)
+  1100/2266  (142 img/s  ETA 8s)
+  1200/2266  (142 img/s  ETA 8s)
+  1300/2266  (142 img/s  ETA 7s)
+  1400/2266  (142 img/s  ETA 6s)
+  1500/2266  (141 img/s  ETA 5s)
+  1600/2266  (142 img/s  ETA 5s)
+  1700/2266  (142 img/s  ETA 4s)
+  1800/2266  (142 img/s  ETA 3s)
+  1900/2266  (141 img/s  ETA 3s)
+  2000/2266  (141 img/s  ETA 2s)
+  2100/2266  (141 img/s  ETA 1s)
+  2200/2266  (141 img/s  ETA 0s)
+  2266/2266  (141 img/s  ETA 0s)
+  Done in 16s
+
+Initialized from checkpoints/best_extended.pt  (epoch 19, val MSE 0.027752)
+Model parameters: 1,811,811
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Ep │  TrainLoss   Tr_MSE │   ValLoss   Va_MSE │    MSE_R    MSE_G    MSE_B │       LR   Time       ETA
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │   0.398461 0.040366 │  0.315121 0.035101 │ 0.035136 0.031078 0.039088 │  1.0e-05   289s      1.5h
+       ↳ new best  val MSE: 0.035101  → saved to checkpoints/best_v2.pt
+   2 │   0.395739 0.042211 │  0.295454 0.030749 │ 0.028140 0.028150 0.035957 │  1.0e-05   253s      1.4h
+       ↳ new best  val MSE: 0.030749  → saved to checkpoints/best_v2.pt
+   3 │   0.389048 0.041386 │  0.300567 0.038691 │ 0.037176 0.035348 0.043547 │  1.0e-05   227s      1.2h
+   4 │   0.387237 0.042890 │  0.271103 0.029003 │ 0.027294 0.026345 0.033370 │  1.0e-05   250s      1.1h
+       ↳ new best  val MSE: 0.029003  → saved to checkpoints/best_v2.pt
+   5 │   0.387327 0.043638 │  0.297370 0.031640 │ 0.030155 0.028797 0.035968 │  1.0e-05   233s      1.0h
+   6 │   0.383663 0.043374 │  0.283001 0.032990 │ 0.030962 0.030618 0.037390 │  1.0e-05   274s       59m
+   7 │   0.382930 0.044608 │  0.296441 0.037209 │ 0.035319 0.033758 0.042549 │  1.0e-05   267s       55m

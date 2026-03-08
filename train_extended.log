@@ -1,0 +1,87 @@
+
+============================================================
+  Low-Light Enhancement — Extended Fine-Tuning
+============================================================
+  Device:           cpu
+  Init checkpoint:  checkpoints/best.pt
+  Manifest:         /home/taya/night-to-day-imgConversion/extended_manifest.csv
+  Epochs:           20
+  Batch size:       8
+  Crop size:        128×128
+  LR:               1e-05
+============================================================
+
+Building train/val splits (scene-level) from extended manifest ...
+  Train: 1515 pairs  (TA=1095, LOL=420)
+  Val:    161 pairs  (TA=81,  LOL=80)
+
+Pre-fetching 2266 unique images from HF Hub (cached after first run) ...
+  100/2266  (87 img/s  ETA 25s)
+  200/2266  (111 img/s  ETA 19s)
+  300/2266  (120 img/s  ETA 16s)
+  400/2266  (122 img/s  ETA 15s)
+  500/2266  (127 img/s  ETA 14s)
+  600/2266  (131 img/s  ETA 13s)
+  700/2266  (134 img/s  ETA 12s)
+  800/2266  (135 img/s  ETA 11s)
+  900/2266  (137 img/s  ETA 10s)
+  1000/2266  (138 img/s  ETA 9s)
+  1100/2266  (137 img/s  ETA 8s)
+  1200/2266  (113 img/s  ETA 9s)
+  1300/2266  (86 img/s  ETA 11s)
+  1400/2266  (72 img/s  ETA 12s)
+  1500/2266  (61 img/s  ETA 12s)
+  1600/2266  (56 img/s  ETA 12s)
+  1700/2266  (51 img/s  ETA 11s)
+  1800/2266  (48 img/s  ETA 10s)
+  1900/2266  (45 img/s  ETA 8s)
+  2000/2266  (44 img/s  ETA 6s)
+  2100/2266  (45 img/s  ETA 4s)
+  2200/2266  (43 img/s  ETA 2s)
+  2266/2266  (42 img/s  ETA 0s)
+  Done in 53s
+
+Initialized from checkpoints/best.pt  (epoch 22, val MSE 0.028953)
+Model parameters: 1,811,811
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Ep │  TrainLoss   Tr_MSE │   ValLoss   Va_MSE │    MSE_R    MSE_G    MSE_B │       LR   Time       ETA
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │   0.045298 0.045298 │  0.033250 0.033250 │ 0.032900 0.030728 0.036123 │  1.0e-05   150s       48m
+       ↳ new best  val MSE: 0.033250  → saved to checkpoints/best_extended.pt
+   2 │   0.044029 0.044029 │  0.035901 0.035901 │ 0.035543 0.032659 0.039502 │  1.0e-05   129s       42m
+   3 │   0.043579 0.043579 │  0.031301 0.031301 │ 0.033523 0.028636 0.031745 │  1.0e-05   143s       40m
+       ↳ new best  val MSE: 0.031301  → saved to checkpoints/best_extended.pt
+   4 │   0.042728 0.042728 │  0.033143 0.033143 │ 0.032529 0.030583 0.036318 │  1.0e-05   131s       37m
+   5 │   0.043481 0.043481 │  0.034552 0.034552 │ 0.034666 0.032013 0.036978 │  1.0e-05   115s       33m
+   6 │   0.043071 0.043071 │  0.031409 0.031409 │ 0.031724 0.027909 0.034593 │  1.0e-05   121s       31m
+   7 │   0.041966 0.041966 │  0.032736 0.032736 │ 0.031680 0.029982 0.036545 │  1.0e-05   139s       29m
+   8 │   0.040932 0.040932 │  0.030066 0.030066 │ 0.028076 0.027367 0.034755 │  1.0e-05   138s       27m
+       ↳ new best  val MSE: 0.030066  → saved to checkpoints/best_extended.pt
+   9 │   0.041527 0.041527 │  0.029932 0.029932 │ 0.028948 0.026681 0.034166 │  1.0e-05   148s       25m
+       ↳ new best  val MSE: 0.029932  → saved to checkpoints/best_extended.pt
+  10 │   0.040836 0.040836 │  0.029888 0.029888 │ 0.028694 0.027100 0.033869 │  1.0e-05   143s       23m
+       ↳ new best  val MSE: 0.029888  → saved to checkpoints/best_extended.pt
+  11 │   0.039981 0.039981 │  0.029658 0.029658 │ 0.027603 0.026932 0.034441 │  1.0e-05   150s       21m
+       ↳ new best  val MSE: 0.029658  → saved to checkpoints/best_extended.pt
+  12 │   0.042402 0.042402 │  0.030755 0.030755 │ 0.030603 0.028458 0.033203 │  1.0e-05   138s       18m
+  13 │   0.042061 0.042061 │  0.032160 0.032160 │ 0.030106 0.028968 0.037405 │  1.0e-05   145s       16m
+  14 │   0.040989 0.040989 │  0.029601 0.029601 │ 0.028015 0.026560 0.034228 │  1.0e-05   134s       14m
+       ↳ new best  val MSE: 0.029601  → saved to checkpoints/best_extended.pt
+  15 │   0.040349 0.040349 │  0.029234 0.029234 │ 0.027889 0.026202 0.033609 │  1.0e-05   140s       11m
+       ↳ new best  val MSE: 0.029234  → saved to checkpoints/best_extended.pt
+  16 │   0.039369 0.039369 │  0.032049 0.032049 │ 0.030131 0.029141 0.036873 │  1.0e-05   142s        9m
+  17 │   0.039922 0.039922 │  0.027774 0.027774 │ 0.027696 0.025352 0.030275 │  1.0e-05   137s        7m
+       ↳ new best  val MSE: 0.027774  → saved to checkpoints/best_extended.pt
+  18 │   0.040136 0.040136 │  0.028962 0.028962 │ 0.027476 0.026400 0.033009 │  1.0e-05   133s        5m
+  19 │   0.041168 0.041168 │  0.027752 0.027752 │ 0.026945 0.025522 0.030788 │  1.0e-05   114s        2m
+       ↳ new best  val MSE: 0.027752  → saved to checkpoints/best_extended.pt
+  20 │   0.040250 0.040250 │  0.030765 0.030765 │ 0.030378 0.028128 0.033791 │  1.0e-05   118s        0m
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Fine-tuning complete.
+  Best val MSE avg:  0.027752
+  Best checkpoint:   checkpoints/best_extended.pt
+  Last checkpoint:   checkpoints/last_extended.pt
+  Experiment log:    experiment_log_extended.csv
+
