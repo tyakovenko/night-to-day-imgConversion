@@ -59,25 +59,58 @@ def channel_mse_eval(pred: np.ndarray, ref: np.ndarray) -> dict:
     return {"R": mse_r, "G": mse_g, "B": mse_b, "avg": mse_avg}
 
 
-def enhance(input_path: str, checkpoint_path: str, base_filters: int = 32) -> np.ndarray:
+def pad_to_multiple(t: torch.Tensor, multiple: int = 16):
+    """
+    Pad a 1CHW tensor so H and W are divisible by `multiple`.
+    Uses reflect padding so border pixels mirror real image content,
+    minimising edge distortion in the padded region.
+    Returns (padded_tensor, (pad_h, pad_w)) so the caller can crop back.
+    """
+    _, _, h, w = t.shape
+    pad_h = (multiple - h % multiple) % multiple
+    pad_w = (multiple - w % multiple) % multiple
+    if pad_h > 0 or pad_w > 0:
+        # Pad bottom and right only — easy to crop by [:h_orig, :w_orig]
+        t = torch.nn.functional.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
+    return t, (pad_h, pad_w)
+
+
+def enhance(input_path: str, checkpoint_path: str, base_filters: int | None = None) -> np.ndarray:
     """
     Run inference on a single image at full resolution.
     Returns enhanced image as HWC float32 array in [0, 1].
+
+    base_filters is auto-detected from checkpoint's saved args when not specified.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = UNet(base_filters=base_filters).to(device)
     ckpt = torch.load(checkpoint_path, map_location=device)
+
+    # Auto-detect base_filters from checkpoint to avoid flag/checkpoint mismatch
+    if base_filters is None:
+        base_filters = ckpt.get("args", {}).get("base_filters", 16)
+
+    model = UNet(base_filters=base_filters).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
     input_arr = load_image_rgb(input_path)
-    input_t   = image_to_tensor(input_arr).to(device)
+    h_orig, w_orig = input_arr.shape[:2]
+    input_t = image_to_tensor(input_arr).to(device)
+
+    # U-Net has 4 MaxPool layers → H and W must be divisible by 16.
+    # Eval images (1024×737) have H%16=1, so 15px of reflect padding is added
+    # to the bottom; the padded strip is cropped back after inference and never
+    # appears in the saved output or MSE computation.
+    input_t, (pad_h, pad_w) = pad_to_multiple(input_t, multiple=16)
 
     with torch.no_grad():
         output_t = model(input_t)
 
-    # Output is float32 in [0, 1], shape 1CHW -> HWC
+    # Crop back to original dimensions before returning
+    if pad_h > 0 or pad_w > 0:
+        output_t = output_t[:, :, :h_orig, :w_orig]
+
     output_arr = output_t.squeeze(0).permute(1, 2, 0).cpu().numpy()
     return np.clip(output_arr, 0.0, 1.0).astype(np.float32)
 
@@ -88,7 +121,8 @@ def main():
     parser.add_argument("--output",      default=None,   help="Output path (default: enhanced_<input>)")
     parser.add_argument("--reference",   default=None,   help="Day reference image for MSE evaluation")
     parser.add_argument("--checkpoint",  default="checkpoints/best.pt")
-    parser.add_argument("--base-filters", type=int, default=32)
+    parser.add_argument("--base-filters", type=int, default=None,
+                        help="Base filters for U-Net (auto-detected from checkpoint if omitted)")
     args = parser.parse_args()
 
     if not Path(args.checkpoint).exists():

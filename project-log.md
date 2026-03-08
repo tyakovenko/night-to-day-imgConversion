@@ -125,11 +125,44 @@ Created training pipeline scripts:
 
 ### Open Tasks / TODOs
 
-- **[BUG] Fix Space crash on Enhance with real images**
-  - Symptom: uploading `night.jpg` / `day.jpg` and pressing Enhance causes an error
-  - Likely cause: U-Net has 4 MaxPool layers → input dimensions must be divisible by 16. Images with non-multiple-of-16 dimensions (e.g. 481×640) cause skip-connection shape mismatches in the decoder
-  - Fix: pad input to nearest multiple of 16 before inference, then crop output back to original size
-  - Location to fix: `enhance_image()` in `app.py` and `enhance()` in `enhance.py`
+- **[BUG] Fix Space crash on Enhance with real images** — same padding fix still needed in `app.py`
+  - Location: `enhance_image()` in `app.py` — apply same `pad_to_multiple` + crop pattern as `enhance.py`
 
-- Run `enhance.py --input night.png --reference day.png` once eval pair is available (final graded MSE)
 - Consider additional training epochs or LOL dataset fine-tuning to push MSE lower
+
+---
+
+## Session: 2026-03-08 (continued — eval fix)
+
+### Completed This Session
+
+**Final evaluation run on `night.jpg` / `day.jpg`**
+
+Two bugs were fixed in `enhance.py` to enable inference on the final eval pair:
+
+1. **Padding bug (shape mismatch):** The U-Net has 4 MaxPool2d layers, so input H and W must each be divisible by 16. `night.jpg` / `day.jpg` are 1024×737 — height 737 % 16 = 1, causing a skip-connection shape mismatch in the decoder. Fix: added `pad_to_multiple(t, 16)` using **reflect padding** (bottom/right only) before the forward pass, then cropped output back to original dimensions (`[:h_orig, :w_orig]`). Reflect padding mirrors real border pixels so the model sees plausible content; the 15-row padded strip is fully discarded before saving and before MSE computation.
+
+2. **base_filters mismatch:** `enhance.py` defaulted to `base_filters=32`, but the checkpoint (`best.pt`) was trained with `base_filters=16`. Loading the wrong architecture caused a state_dict key mismatch. Fix: auto-detect `base_filters` from `ckpt["args"]["base_filters"]`; fall back to 16 if key absent.
+
+### Final Evaluation Results
+
+```
+Input:  night.jpg (1024×737)
+Ref:    day.jpg   (1024×737)
+Model:  checkpoints/best.pt  (epoch 22, base_filters=16)
+
+MSE_R:   0.037988
+MSE_G:   0.035524
+MSE_B:   0.043262
+MSE_avg: 0.038925
+```
+
+Note: val MSE during training was 0.028953 — higher score on final eval pair is expected (different scene, not in training set).
+
+### Decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Padding strategy | reflect | Mirrors real border pixels; avoids hard black edge that would bias convolution near border; padded strip is cropped back and never appears in output |
+| Padding sides | bottom + right only | Simplifies crop: `[:h_orig, :w_orig]` is exact, no offset needed |
+| base_filters detection | auto from `ckpt["args"]` | Eliminates flag/checkpoint mismatch class of bug permanently |

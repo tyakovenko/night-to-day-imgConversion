@@ -75,6 +75,20 @@ def compute_metrics(pred: np.ndarray, ref: np.ndarray) -> dict:
 
 # ── Inference ──────────────────────────────────────────────────────────────────
 
+def pad_to_multiple(t: torch.Tensor, multiple: int = 16):
+    """
+    Pad a 1CHW tensor so H and W are divisible by `multiple`.
+    Uses reflect padding (bottom/right only) so border pixels mirror real image
+    content. Returns (padded_tensor, (h_orig, w_orig)) for exact crop-back.
+    """
+    _, _, h, w = t.shape
+    pad_h = (multiple - h % multiple) % multiple
+    pad_w = (multiple - w % multiple) % multiple
+    if pad_h > 0 or pad_w > 0:
+        t = torch.nn.functional.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
+    return t, (h, w)
+
+
 def enhance_image(input_img: np.ndarray) -> np.ndarray:
     """
     Run U-Net enhancement at full resolution.
@@ -87,8 +101,14 @@ def enhance_image(input_img: np.ndarray) -> np.ndarray:
         t = torch.from_numpy(
             input_img.astype(np.float32) / 255.0
         ).permute(2, 0, 1).unsqueeze(0)          # 1CHW
+
+        # U-Net has 4 MaxPool layers → H and W must be divisible by 16.
+        # Reflect-pad, run inference, then crop back to original dimensions.
+        t, (h_orig, w_orig) = pad_to_multiple(t, multiple=16)
         with torch.no_grad():
             out = _model(t)
+        out = out[:, :, :h_orig, :w_orig]
+
         result = out.squeeze(0).permute(1, 2, 0).numpy()  # HWC
         return (np.clip(result, 0, 1) * 255).astype(np.uint8)
 
@@ -211,7 +231,7 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
     gr.Markdown("### Examples")
     gr.Markdown(
         "_Upload your own image above, or use the final evaluation pair "
-        "(`night.png` / `day.png`) in the repo root once available._"
+        "(`night.jpg` / `day.jpg`) from the repo root._"
     )
 
 

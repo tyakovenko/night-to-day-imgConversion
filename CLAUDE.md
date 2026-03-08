@@ -19,14 +19,14 @@ python analyze_dataset.py
 # Re-upload dataset to HF Hub (use v3 only — v1/v2 are broken for bulk uploads)
 python upload_to_hf_v3.py
 
-# Train model (Phase 2 — not yet implemented)
-python train.py --config config.yaml
+# Train model
+python train.py
 
 # Run inference on a single image
-python enhance.py --input night.png --output enhanced.png
+python enhance.py --input night.jpg --output enhanced_night.jpg
 
-# Evaluate against ground truth (channel-wise MSE)
-python enhance.py --input night.png --reference day.png
+# Evaluate against ground truth (channel-wise MSE) — final eval pair
+python enhance.py --input night.jpg --reference day.jpg
 
 # Launch Gradio demo locally
 python app.py
@@ -39,7 +39,8 @@ python app.py
 ### Phase Status
 
 - **Phase 1 (Data Analysis):** COMPLETE — `low_light_manifest.csv` + `data-analyst-report.md` generated; dataset on HF Hub
-- **Phase 2 (Model + Training pipeline):** NOT STARTED — `train.py`, `enhance.py`, `app.py` to be written
+- **Phase 2 (Model + Training pipeline):** COMPLETE — U-Net trained (epoch 22, val MSE 0.028953); `best.pt` on HF Hub
+- **Phase 3 (UI / deployment):** IN PROGRESS — Space live; inference padding bug still needs fix in `app.py`
 
 ### Data Flow
 
@@ -65,14 +66,6 @@ All code that loads training data must stream images from HF Hub using `low_ligh
 | `analyze_dataset.py` | Parses annotations.tsv, selects day/low-light pairs, writes manifest + report |
 | `upload_to_hf_v3.py` | Uploads images + manifest to HF Hub via `upload_large_folder()` |
 | `upload_to_hf.py` / `upload_to_hf_v2.py` | Deprecated upload attempts — do not use |
-
-### Scripts (to be implemented)
-
-| Script | Purpose |
-|--------|---------|
-| `train.py` | Training loop; reads pairs from HF Hub via manifest |
-| `enhance.py` | Single-image inference; outputs enhanced image + optional MSE |
-| `app.py` | Gradio UI for HF Spaces deployment |
 
 ### Dataset Class Design
 
@@ -166,7 +159,9 @@ Summary of DataAnalyst's approach (details in report):
 - **Many-to-one mapping:** multiple low-light images per scene may map to one day target.
 - **Excluded scenes:** any scene missing a valid daylight or low-light image is dropped and documented.
 
-**Final evaluation pair (in repo root):** `night.png` (input) / `day.png` (ground truth). These are used for a **single final evaluation run only** — never for training or model testing. The model's grade is determined by channel-wise MSE on this pair. Additional hidden pairs may also be used.
+**Final evaluation pair (in repo root):** `night.jpg` (input) / `day.jpg` (ground truth) — 1024×737. These are used for a **single final evaluation run only** — never for training or model testing. The model's grade is determined by channel-wise MSE on this pair. Additional hidden pairs may also be used.
+
+**Eval pair note:** Height 737 is not divisible by 16. `enhance.py` handles this with reflect padding (see `pad_to_multiple`). If hidden eval pairs have similar non-multiple-of-16 dimensions, the same code path handles them automatically.
 
 **Data notes:**
 - Some night images are very noisy in low-light — expected
