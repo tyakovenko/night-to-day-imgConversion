@@ -1,8 +1,88 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # CLAUDE.md — Low-Light to Day Image Enhancement
+
+## Commands
+
+```bash
+# Activate environment (always do this first)
+source venv/bin/activate
+
+# Install / sync dependencies
+pip install -r requirements.txt
+
+# Re-run data analysis (Phase 1 — already complete, only if manifest needs regeneration)
+python analyze_dataset.py
+
+# Re-upload dataset to HF Hub (use v3 only — v1/v2 are broken for bulk uploads)
+python upload_to_hf_v3.py
+
+# Train model (Phase 2 — not yet implemented)
+python train.py --config config.yaml
+
+# Run inference on a single image
+python enhance.py --input night.png --output enhanced.png
+
+# Evaluate against ground truth (channel-wise MSE)
+python enhance.py --input night.png --reference day.png
+
+# Launch Gradio demo locally
+python app.py
+```
+
+---
+
+## Architecture
+
+### Phase Status
+
+- **Phase 1 (Data Analysis):** COMPLETE — `low_light_manifest.csv` + `data-analyst-report.md` generated; dataset on HF Hub
+- **Phase 2 (Model + Training pipeline):** NOT STARTED — `train.py`, `enhance.py`, `app.py` to be written
+
+### Data Flow
+
+```
+HF Hub: tyakovenko/night-to-day-enhancement
+    ├── low_light_manifest.csv   ← sole authoritative source of (low-light, day) pairs
+    ├── low_light/<scene>/<img>  ← input images
+    └── day/<scene>/<img>        ← target images
+
+low_light_manifest.csv columns:
+    scene              — scene folder ID (e.g. "00000064")
+    low_light_image    — relative path, e.g. "00000064/3.jpg"
+    day_target_image   — relative path, e.g. "00000064/12.jpg"
+    low_light_reason   — which thresholds triggered classification
+```
+
+All code that loads training data must stream images from HF Hub using `low_light_manifest.csv`. Never reference local paths (`transientAttributesDataset/` or `hf_staging/`).
+
+### Scripts (existing)
+
+| Script | Purpose |
+|--------|---------|
+| `analyze_dataset.py` | Parses annotations.tsv, selects day/low-light pairs, writes manifest + report |
+| `upload_to_hf_v3.py` | Uploads images + manifest to HF Hub via `upload_large_folder()` |
+| `upload_to_hf.py` / `upload_to_hf_v2.py` | Deprecated upload attempts — do not use |
+
+### Scripts (to be implemented)
+
+| Script | Purpose |
+|--------|---------|
+| `train.py` | Training loop; reads pairs from HF Hub via manifest |
+| `enhance.py` | Single-image inference; outputs enhanced image + optional MSE |
+| `app.py` | Gradio UI for HF Spaces deployment |
+
+### Dataset Class Design
+
+Must be dataset-agnostic: Transient Attributes and LOL datasets share the same `(low_light_image, day_target_image)` schema. LOL can be appended to the manifest with `low_light_reason="lol_dataset"`.
+
+---
 
 ## Project
 
-**Name:** Low-Light to Day Image Enhancement  
+**Name:** Low-Light to Day Image Enhancement
 **Description:** Enhance low-light images (including night-time) to match day-time appearance, evaluated by channel-wise MSE.  
 
 ## Stack
@@ -72,7 +152,7 @@ Compute in **float64** to avoid accumulation errors. Normalize consistently (0�
 ### Dataset
 
 **Training data:** Transient Attributes Dataset — http://transattr.cs.brown.edu/  
-**Access via:** Hugging Face Hub (to be uploaded as `tyakovenko/transient-attributes-day-night`)
+**Access via:** Hugging Face Hub — `tyakovenko/night-to-day-enhancement` (uploaded, 2,537 files, 255.6 MB)
 
 Dataset structure: 102 scene directories in `imageAlignedLD/`, each containing time-of-day captures of the same scene. Annotations: 40 attributes per image (score + confidence) in `annotations.tsv`.
 

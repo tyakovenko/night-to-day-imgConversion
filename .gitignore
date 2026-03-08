@@ -1,4 +1,12 @@
 .idea
 *.jpg
-venv
+venv/
 testing.py
+__pycache__/
+*.pyc
+checkpoints/
+training_output.log
+training_monitor.log
+hf_staging/
+transientAttributesDataset/
+experiment_log.csv
