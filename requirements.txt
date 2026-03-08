@@ -2,6 +2,7 @@ gradio>=4.0
 numpy
 Pillow
 scikit-image
+torch
+torchvision
 huggingface_hub
 pandas
-# torch and torchvision added here once model checkpoint is ready

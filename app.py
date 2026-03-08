@@ -2,33 +2,36 @@
 Gradio UI — Low-Light to Day Image Enhancement
 Hosted at: huggingface.co/spaces/tyakovenko/night-to-day-enhancement
 
-UI skeleton — model connection is a placeholder until training completes.
-Once checkpoints/best.pt is available (or uploaded to HF Hub model repo),
-replace MODEL_REPO_ID / load_model() with the real loader.
+Model: U-Net (base_filters=16), trained on Transient Attributes Dataset.
+Checkpoint: tyakovenko/night-to-day-enhancement-model / best.pt
 """
 
 import numpy as np
 from PIL import Image
+import torch
 import gradio as gr
+from huggingface_hub import hf_hub_download
 from skimage.metrics import structural_similarity as ssim_fn
+from model import UNet
 
-# ── Model placeholder ──────────────────────────────────────────────────────────
-# TODO: replace with real checkpoint loader after training completes.
-# The model checkpoint will be stored at:
-#   HF Hub model repo: tyakovenko/night-to-day-enhancement-model
-# Load with:
-#   from huggingface_hub import hf_hub_download
-#   from model import UNet
-#   ckpt_path = hf_hub_download("tyakovenko/night-to-day-enhancement-model", "best.pt")
-#   model = UNet(base_filters=16); model.load_state_dict(torch.load(ckpt_path)["model"])
-
-MODEL_LOADED = False  # flip to True once checkpoint is wired in
+MODEL_REPO = "tyakovenko/night-to-day-enhancement-model"
+BASE_FILTERS = 16
 
 def load_model():
-    """Stub — returns None until checkpoint is available."""
-    return None
+    """Download checkpoint from HF Hub and load U-Net weights."""
+    try:
+        ckpt_path = hf_hub_download(repo_id=MODEL_REPO, filename="best.pt", repo_type="model")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        model = UNet(base_filters=BASE_FILTERS)
+        model.load_state_dict(ckpt["model"])
+        model.eval()
+        print(f"Model loaded from {MODEL_REPO} (epoch {ckpt.get('epoch', '?')}, val MSE {ckpt.get('val_mse', '?'):.4f})")
+        return model, True
+    except Exception as e:
+        print(f"Model load failed: {e}")
+        return None, False
 
-_model = load_model()
+_model, MODEL_LOADED = load_model()
 
 
 # ── Metrics ────────────────────────────────────────────────────────────────────
@@ -74,31 +77,25 @@ def compute_metrics(pred: np.ndarray, ref: np.ndarray) -> dict:
 
 def enhance_image(input_img: np.ndarray) -> np.ndarray:
     """
-    Run enhancement on a single image.
-    Skeleton: returns a brightened version until the model is wired in.
-    Replace the body of this function with real U-Net inference post-training.
+    Run U-Net enhancement at full resolution.
+    Falls back to gamma brightening if model failed to load.
     """
     if input_img is None:
         return None
 
     if MODEL_LOADED and _model is not None:
-        # Real inference path (activated post-training)
-        import torch
-        from model import UNet
-        _model.eval()
         t = torch.from_numpy(
             input_img.astype(np.float32) / 255.0
-        ).permute(2, 0, 1).unsqueeze(0)
+        ).permute(2, 0, 1).unsqueeze(0)          # 1CHW
         with torch.no_grad():
             out = _model(t)
-        result = out.squeeze(0).permute(1, 2, 0).numpy()
+        result = out.squeeze(0).permute(1, 2, 0).numpy()  # HWC
         return (np.clip(result, 0, 1) * 255).astype(np.uint8)
 
     else:
-        # Placeholder: simple gamma brightening to show the pipeline is wired
+        # Fallback: gamma brightening
         arr = input_img.astype(np.float32) / 255.0
-        brightened = np.power(arr, 0.5)          # gamma = 0.5 → brightens
-        brightened = np.clip(brightened, 0, 1)
+        brightened = np.power(np.clip(arr, 0, 1), 0.5)
         return (brightened * 255).astype(np.uint8)
 
 
@@ -116,9 +113,9 @@ def run(input_img, ref_img):
     enhanced = enhance_image(input_img)
 
     model_status = (
-        "✅ Model loaded — U-Net (base_filters=16)"
+        "✅ U-Net loaded (epoch 22, val MSE 0.0290) — tyakovenko/night-to-day-enhancement-model"
         if MODEL_LOADED
-        else "⚠️ Model not yet connected — showing gamma-brightened placeholder"
+        else "⚠️ Model unavailable — showing gamma-brightened placeholder"
     )
 
     if ref_img is None:
