@@ -23,9 +23,10 @@ import torch
 from torch.utils.data import Dataset
 from huggingface_hub import hf_hub_download
 
-HF_REPO_ID = "tyakovenko/night-to-day-enhancement"
+HF_REPO_ID = "tyakovenko/night-to-day-enhancement"          # original TA repo (default)
 HF_REPO_TYPE = "dataset"
 MANIFEST_PATH = Path(__file__).parent / "low_light_manifest.csv"
+EXTENDED_MANIFEST_PATH = Path(__file__).parent / "extended_manifest.csv"
 
 
 def _load_image_rgb(path: str) -> np.ndarray:
@@ -34,17 +35,18 @@ def _load_image_rgb(path: str) -> np.ndarray:
     return np.array(img, dtype=np.float32) / 255.0
 
 
-def _fetch_image(hf_prefix: str, rel_path: str) -> str:
+def _fetch_image(hf_prefix: str, rel_path: str, repo_id: str = HF_REPO_ID) -> str:
     """
     Download image from HF Hub (cached to ~/.cache/huggingface/hub).
     Returns local cache path.
 
     hf_prefix: "low_light" or "day"
-    rel_path:  e.g. "00000064/3.jpg"
+    rel_path:  e.g. "00000064/3.jpg" or "lol/1.png"
+    repo_id:   HF dataset repo to fetch from (defaults to original TA repo)
     """
     repo_path = f"{hf_prefix}/{rel_path}"
     return hf_hub_download(
-        repo_id=HF_REPO_ID,
+        repo_id=repo_id,
         filename=repo_path,
         repo_type=HF_REPO_TYPE,
     )
@@ -78,9 +80,11 @@ class LowLightDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         row = self.df.iloc[idx]
 
-        # Fetch from HF Hub (returns cached local path after first download)
-        ll_path = _fetch_image("low_light", row["low_light_image"])
-        dt_path = _fetch_image("day", row["day_target_image"])
+        # Fetch from HF Hub (returns cached local path after first download).
+        # repo_id column allows rows from different HF repos (e.g. LOL vs TA).
+        repo_id = row.get("repo_id", HF_REPO_ID)
+        ll_path = _fetch_image("low_light", row["low_light_image"], repo_id)
+        dt_path = _fetch_image("day",       row["day_target_image"], repo_id)
 
         # Load as float32 RGB in [0, 1]
         ll_img = _load_image_rgb(ll_path)
