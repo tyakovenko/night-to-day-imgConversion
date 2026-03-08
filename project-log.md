@@ -66,7 +66,7 @@ Created training pipeline scripts:
 **Model parameters:** 7,240,387
 **Images prefetched from HF Hub:** 1,266 files in 71s — all subsequent epochs use local cache, no auth required
 
-### Training Results (in progress — 30 epochs total)
+### Training Results (COMPLETE — 30 epochs)
 
 | Ep | Train Loss | Val MSE avg | MSE_R    | MSE_G    | MSE_B    | Time | Best |
 |----|-----------|-------------|----------|----------|----------|------|------|
@@ -81,9 +81,30 @@ Created training pipeline scripts:
 |  9 | 0.047977  | 0.036101    | 0.032500 | 0.032339 | 0.043465 |  98s |   |
 | 10 | 0.048240  | 0.033233    | 0.032639 | 0.029650 | 0.037409 |  92s |   |
 | 11 | 0.047696  | 0.033106    | 0.031234 | 0.029439 | 0.038645 |  88s |   |
+| 12 | 0.047381  | 0.030668    | 0.031171 | 0.028090 | 0.032744 |  92s | ✓ |
+| 13 | 0.048375  | 0.037351    | 0.034258 | 0.033383 | 0.044412 |  89s |   |
+| 14 | 0.046013  | 0.034301    | 0.032956 | 0.030723 | 0.039223 |  88s |   |
+| 15 | 0.047037  | 0.033501    | 0.032079 | 0.030086 | 0.038339 |  92s |   |
+| 16 | 0.045721  | 0.036675    | 0.033941 | 0.033099 | 0.042984 |  94s |   |
+| 17 | 0.046112  | 0.032932    | 0.030803 | 0.029809 | 0.038186 |  86s |   |
+| 18 | 0.046836  | 0.036563    | 0.033851 | 0.032513 | 0.043326 |  90s |   |
+| 19 | 0.046244  | 0.033501    | 0.032378 | 0.030055 | 0.038071 |  99s |   |
+| 20 | 0.046453  | 0.029839    | 0.029595 | 0.026591 | 0.033331 | 111s | ✓ |
+| 21 | 0.044902  | 0.034271    | 0.033707 | 0.030986 | 0.038121 | 100s |   |
+| 22 | 0.043913  | 0.028953    | 0.028700 | 0.025959 | 0.032200 |  88s | ✓ |
+| 23 | 0.046162  | 0.032787    | 0.032881 | 0.029942 | 0.035538 |  94s |   |
+| 24 | 0.044521  | 0.030584    | 0.030248 | 0.027590 | 0.033915 |  95s |   |
+| 25 | 0.046452  | 0.033651    | 0.032762 | 0.030585 | 0.037607 |  91s |   |
+| 26 | 0.044440  | 0.037195    | 0.035323 | 0.033143 | 0.043118 | 102s |   |
+| 27 | 0.044797  | 0.035506    | 0.035270 | 0.032336 | 0.038913 |  94s |   |
+| 28 | 0.044276  | 0.032017    | 0.030109 | 0.029099 | 0.036844 | 103s |   |
+| 29 | 0.044924  | 0.033364    | 0.032470 | 0.030195 | 0.037426 |  99s |   |
+| 30 | 0.044869  | 0.032616    | 0.031317 | 0.029604 | 0.036927 | 104s |   |
 
-**Best so far:** Val MSE 0.032454 at epoch 8 (checkpoint: `checkpoints/best.pt`)
-**Observation:** Blue channel (MSE_B) consistently highest — night scenes suppress blue/cool tones most.
+**Best checkpoint:** Epoch 22, Val MSE avg **0.028953** (R=0.0287, G=0.0260, B=0.0322)
+**Checkpoint saved:** `checkpoints/best.pt`
+**LR schedule:** halved to 5e-5 at epoch 19, halved to 2.5e-5 at epoch 29
+**Observation:** Blue channel (MSE_B) consistently highest — expected, night scenes suppress cool tones most. Green channel learns fastest.
 
 ### Decisions
 
@@ -97,7 +118,7 @@ Created training pipeline scripts:
 
 ### Open Tasks
 
-- Wait for training to complete (30 epochs, ~19 epochs remaining)
+- Upload `checkpoints/best.pt` to HF Hub model repo
+- Connect model to `app.py` (flip `MODEL_LOADED=True`, wire checkpoint loader)
 - Run `enhance.py --input night.png --reference day.png` on final evaluation pair
-- Implement `app.py` Gradio demo
-- Upload model checkpoint to HF Hub
+- Fix HF Space: lightweight `requirements.txt` (remove torch until model wired) → rebuild

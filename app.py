@@ -218,5 +218,4 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
     )
 
 
-if __name__ == "__main__":
-    demo.launch()
+demo.launch()
