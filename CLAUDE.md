@@ -15,7 +15,7 @@
 ## Deployment
 
 **Target:** local (training) + Hugging Face Spaces (Gradio demo + inference)  
-**HF Spaces:** `huggingface.co/spaces/tyakovenko/night-to-day-enhancement` (to be created)  
+**HF Spaces:** `huggingface.co/spaces/tyakovenko/night-to-day-enhancement` 
 
 ## UI Design
 
@@ -32,16 +32,21 @@
 
 **Phase 1 — Data Analysis (blocking)**
 
-Lead spawns **DataAnalyst** as the first action of every session. Lead passes it:
+Lead checks for Phase 1 completion before doing anything else. Phase 1 is **already complete** if all three of the following are true:
 
-- Path to `annotations.tsv`
-- Path to the `imageAlignedLD/` scene directories
-- Path to `agents/data-analyst.md` (the agent's own spec)
+- `data-analyst-report.md` exists and is non-empty
+- `low_light_manifest.csv` exists and is non-empty
+- `hf_upload_status.txt` contains `status: SUCCESS`
 
-Lead waits for DataAnalyst to return. DataAnalyst is considered done when both of the following exist and are non-empty:
+If all three conditions are met, **skip DataAnalyst entirely** and proceed directly to Phase 2.
 
-- `data-analyst-report.md`
-- `low_light_manifest.csv`
+If any condition is not met, Lead spawns **DataAnalyst** and passes it:
+
+- `transientAttributesDataset/annotations.tsv`
+- `transientAttributesDataset/imageAlignedLD/`
+- `agents/data-analyst.md` (the agent's own spec)
+
+Lead waits for DataAnalyst to return. DataAnalyst is considered done when all three conditions above are satisfied.
 
 **No other agent is spawned and no other task begins until Phase 1 is complete.**
 

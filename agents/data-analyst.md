@@ -4,14 +4,21 @@
 
 Analyzes the full dataset to determine which images qualify as low-light, then produces a curated manifest of (low-light, day) pairs for training.
 
-> Input: `annotations.tsv` + raw image directories  
-> Output: `data-analyst-report.md` + `low_light_manifest.csv`
+> Input: `transientAttributesDataset/annotations.tsv` + `transientAttributesDataset/imageAlignedLD/` (scene image directories)  
+> Output: `data-analyst-report.md` + `low_light_manifest.csv` + curated dataset pushed to `tyakovenko/night-to-day-enhancement` on Hugging Face Hub
 
 ---
 
 ## Activation
 
-**Runs first — before any other agent.** No training, preprocessing, or pair-building begins until both output files exist.
+**Runs first — before any other agent.** No training, preprocessing, or pair-building begins until this agent's outputs are complete.
+
+**Skip condition — do not run if all of the following already exist:**
+- `data-analyst-report.md` (non-empty)
+- `low_light_manifest.csv` (non-empty)
+- `hf_upload_status.txt` containing `status: SUCCESS`
+
+If all three are present, Phase 1 is done. Return immediately without re-running any analysis or re-uploading.
 
 ---
 
@@ -63,3 +70,35 @@ Before handing off to Lead, DataAnalyst must validate every row in `low_light_ma
 - Remove any row that fails either check and log the removal with a reason in `data-analyst-report.md`
 
 Report the final validated counts (rows kept, rows removed) in the report. Lead may only proceed once validation is complete and the manifest contains only verified, readable pairs.
+
+---
+
+## Hugging Face Upload
+
+After validation passes, DataAnalyst uploads the curated dataset to `tyakovenko/night-to-day-enhancement` on Hugging Face Hub using `huggingface_hub`.
+
+**Upload method:** Use `HfApi.upload_large_folder()` — the only approach that reliably handles 1000+ files. It manages chunking, rate limiting, and is resumable if interrupted. Do NOT use `upload_file()` per image (hits rate limits and timeouts) or `upload_folder()` (single-commit size limit fails at scale).
+
+**Staging:** Copy all images and metadata into a local `hf_staging/` directory first, then pass that directory to `upload_large_folder`.
+
+**What to upload:**
+- All validated low-light images under `hf_staging/low_light/<scene>/<filename>`
+- All unique day-target images under `hf_staging/day/<scene>/<filename>`
+- `low_light_manifest.csv`
+- `data-analyst-report.md`
+
+**Dataset structure on Hub:**
+```
+tyakovenko/night-to-day-enhancement
+├── low_light/        # validated low-light images
+├── day/              # corresponding day-target images
+├── low_light_manifest.csv
+└── data-analyst-report.md
+```
+
+**Requirements:**
+- Use cached HF credentials (`huggingface-cli login`) or `HF_TOKEN` env var
+- Log the final Hub URL and dataset size (image count, total MB) in `data-analyst-report.md`
+- If the upload fails, document the failure in the report but still deliver local outputs — do not abort the whole task
+
+**All downstream agents (Backend, training scripts, Dataset class) must read exclusively from `tyakovenko/night-to-day-enhancement` on Hugging Face Hub. No code may reference local image paths after this point.**
