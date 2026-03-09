@@ -52,11 +52,17 @@ class UNet(nn.Module):
     Args:
         base_filters: Number of filters in first encoder level.
                       Doubles at each level. Default 32 (CPU-friendly).
+        residual: If True, use residual learning — model predicts a Tanh delta
+                  which is added to the input and clamped to [0, 1]. This lets
+                  the model focus on *what changes* rather than reconstructing
+                  the full image from scratch, which fixes gray/washed-out outputs.
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 3, base_filters: int = 32):
+    def __init__(self, in_channels: int = 3, out_channels: int = 3,
+                 base_filters: int = 32, residual: bool = False):
         super().__init__()
         f = base_filters
+        self.residual = residual
 
         # Encoder
         self.enc1 = ConvBlock(in_channels, f)        # -> f
@@ -74,13 +80,16 @@ class UNet(nn.Module):
         self.dec2 = UpBlock(f * 4, f * 2, f * 2)
         self.dec1 = UpBlock(f * 2, f, f)
 
-        # Output head
+        # Output head — Tanh for residual mode (delta in [-1,1]), Sigmoid otherwise
+        activation = nn.Tanh() if residual else nn.Sigmoid()
         self.out_conv = nn.Sequential(
             nn.Conv2d(f, out_channels, kernel_size=1),
-            nn.Sigmoid(),  # output in [0, 1]
+            activation,
         )
 
     def forward(self, x):
+        x_input = x  # saved for residual addition
+
         # Encode
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool(e1))
@@ -96,7 +105,13 @@ class UNet(nn.Module):
         d2 = self.dec2(d3, e2)
         d1 = self.dec1(d2, e1)
 
-        return self.out_conv(d1)
+        out = self.out_conv(d1)
+
+        if self.residual:
+            # Add predicted delta to input; clamp keeps output in valid [0,1] range
+            out = torch.clamp(x_input + out, 0.0, 1.0)
+
+        return out
 
 
 def count_parameters(model: nn.Module) -> int:

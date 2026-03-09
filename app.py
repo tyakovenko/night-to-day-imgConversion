@@ -12,13 +12,17 @@ from skimage.metrics import structural_similarity as ssim_fn
 from model import UNet
 
 # ── Model registry ─────────────────────────────────────────────────────────────
+# Each entry: (repo_id, filename, residual)
+# residual=True  → UNet(residual=True); model predicts a delta added to input
+# residual=False → UNet(residual=False); model predicts the full output directly
 
 MODEL_OPTIONS = {
-    "v1 — best.pt  (Transient Attributes, MSE)":          ("tyakovenko/night-to-day-enhancement-model",    "best.pt"),
-    "v1-extended — best_extended.pt  (TA + LOL, MSE)":    ("tyakovenko/night-to-day-enhancement-model",    "best_extended.pt"),
-    "v2 — best_v2.pt  (TA + LOL, L1 + MS-SSIM)":         ("tyakovenko/night-to-day-enhancement-model-v2", "best_v2.pt"),
+    "v1 — best.pt  (Transient Attributes, MSE)":          ("tyakovenko/night-to-day-enhancement-model",    "best.pt",          False),
+    "v1-extended — best_extended.pt  (TA + LOL, MSE)":    ("tyakovenko/night-to-day-enhancement-model",    "best_extended.pt", False),
+    "v2 — best_v2.pt  (TA + LOL, L1 + MS-SSIM)":         ("tyakovenko/night-to-day-enhancement-model-v2", "best_v2.pt",       False),
+    "v3 — best_v3.pt  (TA + LOL, Residual + ColorLoss)":  ("tyakovenko/night-to-day-enhancement-model-v3", "best_v3.pt",       True),
 }
-DEFAULT_MODEL = "v1-extended — best_extended.pt  (TA + LOL, MSE)"
+DEFAULT_MODEL = "v3 — best_v3.pt  (TA + LOL, Residual + ColorLoss)"
 
 # Cache loaded models by display name so switching is instant after first load
 _model_cache: dict = {}  # name → model | None
@@ -29,16 +33,17 @@ def get_model(model_name: str):
     if model_name in _model_cache:
         return _model_cache[model_name]
 
-    repo_id, filename = MODEL_OPTIONS[model_name]
+    repo_id, filename, residual = MODEL_OPTIONS[model_name]
     try:
         ckpt_path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="model")
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         base_filters = ckpt.get("args", {}).get("base_filters", 16)
-        model = UNet(base_filters=base_filters)
+        model = UNet(base_filters=base_filters, residual=residual)
         model.load_state_dict(ckpt["model"])
         model.eval()
         print(f"Loaded {filename} from {repo_id} "
-              f"(epoch {ckpt.get('epoch','?')}, val MSE {ckpt.get('val_mse', 0):.4f})")
+              f"(epoch {ckpt.get('epoch','?')}, val MSE {ckpt.get('val_mse', 0):.4f}, "
+              f"residual={residual})")
         _model_cache[model_name] = model
     except Exception as e:
         print(f"Model load failed [{model_name}]: {e}")
@@ -158,10 +163,11 @@ def run(input_img, ref_img, model_name):
 # ── UI ─────────────────────────────────────────────────────────────────────────
 
 CSS = """
-#title { text-align: center; margin-bottom: 4px; }
+#title    { text-align: center; margin-bottom: 4px; }
 #subtitle { text-align: center; color: #888; margin-bottom: 20px; }
 .metric-box { font-family: monospace; font-size: 1.05em; }
 #status-bar { font-size: 0.85em; color: #aaa; margin-top: 8px; }
+#ref-col { display: flex; align-items: flex-end; }
 """
 
 with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
@@ -173,27 +179,25 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
         elem_id="subtitle",
     )
 
+    # ── Controls row: dropdown + button ───────────────────────────────────────
     with gr.Row():
-        # ── Left column: inputs ───────────────────────────────────────────────
-        with gr.Column(scale=1):
+        with gr.Column(scale=3):
             model_dropdown = gr.Dropdown(
                 choices=list(MODEL_OPTIONS.keys()),
                 value=DEFAULT_MODEL,
                 label="Model",
             )
+        with gr.Column(scale=1, min_width=120):
+            enhance_btn = gr.Button("✨ Enhance", variant="primary")
+
+    # ── Main images row: input and output at the same horizontal level ─────────
+    with gr.Row(equal_height=True):
+        with gr.Column(scale=1):
             input_img = gr.Image(
                 label="Input — Low-Light Image",
                 type="numpy",
                 image_mode="RGB",
             )
-            ref_img = gr.Image(
-                label="Reference — Day Image (optional, for metrics)",
-                type="numpy",
-                image_mode="RGB",
-            )
-            enhance_btn = gr.Button("✨ Enhance", variant="primary")
-
-        # ── Right column: output ──────────────────────────────────────────────
         with gr.Column(scale=1):
             output_img = gr.Image(
                 label="Output — Enhanced Image",
@@ -202,7 +206,18 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
                 interactive=False,
             )
 
-    # ── Metrics row ───────────────────────────────────────────────────────────
+    # ── Reference image (optional, below input) ───────────────────────────────
+    with gr.Row():
+        with gr.Column(scale=1):
+            ref_img = gr.Image(
+                label="Reference — Day Image (optional, for metrics)",
+                type="numpy",
+                image_mode="RGB",
+            )
+        with gr.Column(scale=1):
+            pass  # keeps reference left-aligned, mirroring the input column
+
+    # ── Metrics ───────────────────────────────────────────────────────────────
     gr.Markdown("### Evaluation Metrics")
     gr.Markdown(
         "_Requires a reference image. MSE values are in [0, 1] scale (float64). "

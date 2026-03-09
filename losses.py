@@ -2,6 +2,7 @@
 Loss functions for low-light image enhancement.
 
 CombinedLoss   — L1 + MS-SSIM (pixel fidelity + perceptual quality)
+ColorLoss      — YCbCr chrominance loss (penalises desaturated/gray outputs)
 PerceptualLoss — VGG-16 feature matching (relu2_2 + relu3_3)
 EnhancementLoss — CombinedLoss + PerceptualLoss (full training loss)
 
@@ -37,6 +38,35 @@ class CombinedLoss(nn.Module):
         # ms_ssim returns a scalar in [0, 1]; higher = more similar
         ssim_val = ms_ssim(pred, target, data_range=self.data_range, size_average=True)
         return 0.16 * l1 + 0.84 * (1.0 - ssim_val)
+
+
+class ColorLoss(nn.Module):
+    """
+    Penalise chrominance (Cb, Cr) mismatch more than luminance (Y).
+
+    Uses BT.601 RGB→YCbCr coefficients — fully differentiable, no new deps.
+    Chrominance errors are weighted 2× relative to luminance, because L1 and
+    MS-SSIM both accept desaturated (gray) outputs that match structure but
+    miss color temperature. This loss explicitly punishes that failure mode.
+
+    # SOURCE: BT.601 coefficients — https://www.itu.int/rec/R-REC-BT.601/
+    """
+
+    @staticmethod
+    def _rgb_to_ycbcr(x: torch.Tensor):
+        """Convert [B,3,H,W] float tensor in [0,1] to Y, Cb, Cr components."""
+        r, g, b = x[:, 0:1], x[:, 1:2], x[:, 2:3]
+        y  =  0.299   * r + 0.587   * g + 0.114   * b
+        cb = -0.16875 * r - 0.33126 * g + 0.5     * b + 0.5
+        cr =  0.5     * r - 0.41869 * g - 0.08131 * b + 0.5
+        return y, cb, cr
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        y_p,  cb_p,  cr_p  = self._rgb_to_ycbcr(pred)
+        y_t,  cb_t,  cr_t  = self._rgb_to_ycbcr(target)
+        lum   = F.l1_loss(y_p,  y_t)
+        chrom = F.l1_loss(cb_p, cb_t) + F.l1_loss(cr_p, cr_t)
+        return lum + 2.0 * chrom
 
 
 class PerceptualLoss(nn.Module):

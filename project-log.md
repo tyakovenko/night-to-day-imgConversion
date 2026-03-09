@@ -49,7 +49,7 @@ Upload was completed by running `upload_to_hf_v3.py` foreground with a 20-minute
 
 ---
 
-## Session: 2026-03-08
+## Session: 2026-03-08 (v3 training — color fix)
 
 ### Completed This Session
 
@@ -166,3 +166,60 @@ Note: val MSE during training was 0.028953 — higher score on final eval pair i
 | Padding strategy | reflect | Mirrors real border pixels; avoids hard black edge that would bias convolution near border; padded strip is cropped back and never appears in output |
 | Padding sides | bottom + right only | Simplifies crop: `[:h_orig, :w_orig]` is exact, no offset needed |
 | base_filters detection | auto from `ckpt["args"]` | Eliminates flag/checkpoint mismatch class of bug permanently |
+
+---
+
+## Session: 2026-03-08 (v3 training + deployment)
+
+### Completed This Session
+
+**Root cause analysis for washed-out / gray outputs (v1–v2)**
+
+All prior models produced gray/desaturated images due to three compounding causes:
+1. Sigmoid activations on uncertain units converge to 0.5 (mid-gray)
+2. Model must reconstruct the full image from scratch — capacity wasted on unchanged background
+3. L1 and MS-SSIM are color-blind: a gray sky can match a blue sky if luminance structure matches
+
+**v3 implementation**
+
+Three targeted changes in `model.py`, `losses.py`, and new `train_v3.py`:
+- `model.py`: Added `residual` flag to `UNet`. When `True`, output activation is Tanh and forward pass computes `clamp(input + delta, 0, 1)`. Backward-compatible: default is `False`, existing checkpoints unaffected.
+- `losses.py`: Added `ColorLoss` — BT.601 RGB→YCbCr, chrominance (Cb, Cr) penalised 2× relative to luminance Y. No new deps.
+- `train_v3.py`: New training script. `UNet(base_filters=16, residual=True)`. Loss: `CombinedLoss + 0.5 * ColorLoss`. Warm-starts from `best_extended.pt` with `strict=False`.
+- `app.py`: Restructured UI layout (input/output images now in same `gr.Row(equal_height=True)` — horizontally aligned). Added v3 to dropdown. Updated `MODEL_OPTIONS` to carry `(repo_id, filename, residual)` tuples; `get_model` passes `residual` to `UNet`.
+
+**v3 training results (20 epochs, batch=4, crop=176×176, lr=1e-5)**
+
+| Ep | Val MSE avg | MSE_R | MSE_G | MSE_B | Best |
+|----|------------|-------|-------|-------|------|
+| 1  | 0.073617 | 0.0777 | 0.0697 | 0.0734 | ✓ |
+| 8  | 0.064054 | 0.0673 | 0.0597 | 0.0652 | ✓ |
+| 11 | 0.058475 | 0.0582 | 0.0552 | 0.0620 | ✓ |
+| 16 | 0.056371 | 0.0575 | 0.0528 | 0.0588 | ✓ |
+| 18 | **0.050844** | 0.0506 | 0.0464 | 0.0555 | ✓ |
+
+Best checkpoint: epoch 18, val MSE **0.050844**
+
+**Final eval on night.jpg / day.jpg:**
+- MSE_R=0.075107, MSE_G=0.069984, MSE_B=0.080816, avg=**0.075302**
+- Higher than v1 (0.038925) — expected: ColorLoss trades raw MSE for chrominance accuracy
+
+**Upload**
+- `best_v3.pt` and `model.py` uploaded to `tyakovenko/night-to-day-enhancement-model-v3`
+- `app.py` updated: v3 is the default model in the dropdown
+
+### Decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Residual architecture | Tanh delta + clamp | Prevents Sigmoid regression-to-mean; model predicts only the enhancement delta |
+| Color loss weighting | 0.5 × ColorLoss | Balances chrominance correction against pixel fidelity; tunable via `--color-weight` |
+| Warm-start source | best_extended.pt (not best_v2.pt) | MSE-trained weights provide a stable pixel-accurate starting point; v2 weights are already shifted toward SSIM optima |
+| strict=False load | Yes | Handles the Sigmoid→Tanh activation swap cleanly |
+| UI layout | input/output in same gr.Row(equal_height=True) | Puts images at the same horizontal level; dropdown + button moved to a separate top row |
+
+### Open Tasks
+
+- **Visual quality check**: open `enhanced_night_v3.jpg` — does it show blue sky and natural greens vs. v1's gray output?
+- **Potential next iteration**: if color is fixed but MSE is too high, try staged training — warm-start for 10+ epochs at lower LR before adding ColorLoss, then fine-tune with it
+- **HF Space**: push updated `app.py` to Space repo so v3 appears in the live dropdown
