@@ -190,6 +190,8 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
         with gr.Column(scale=1, min_width=120):
             enhance_btn = gr.Button("✨ Enhance", variant="primary")
 
+    status_bar = gr.Markdown("", elem_id="status-bar")
+
     # ── Main images row: input and output at the same horizontal level ─────────
     with gr.Row(equal_height=True):
         with gr.Column(scale=1):
@@ -233,20 +235,11 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
         mse_g_out = gr.Textbox(label="MSE — G channel", elem_classes="metric-box", interactive=False)
         mse_b_out = gr.Textbox(label="MSE — B channel", elem_classes="metric-box", interactive=False)
 
-    status_bar = gr.Markdown("", elem_id="status-bar")
-
     # ── Wire up ───────────────────────────────────────────────────────────────
     enhance_btn.click(
         fn=run,
         inputs=[input_img, ref_img, model_dropdown],
         outputs=[output_img, mse_out, mse_r_out, mse_g_out, mse_b_out, ssim_out, status_bar],
-    )
-
-    # ── Examples ─────────────────────────────────────────────────────────────
-    gr.Markdown("### Examples")
-    gr.Markdown(
-        "_Upload your own image above, or use the final evaluation pair "
-        "(`night.jpg` / `day.jpg`) from the repo root._"
     )
 
 
