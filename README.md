@@ -13,7 +13,7 @@ A U-Net model that enhances low-light and night-time images to match daylight ap
 
 - **Live demo:** [tyakovenko-night-to-day-enhancement.hf.space](https://tyakovenko-night-to-day-enhancement.hf.space)
 - **Dataset:** [tyakovenko/night-to-day-enhancement](https://huggingface.co/datasets/tyakovenko/night-to-day-enhancement) — 1,176 pairs (Transient Attributes)
-- **Extended dataset:** [tyakovenko/night-to-day-enhancement-extended](https://huggingface.co/datasets/tyakovenko/night-to-day-enhancement-extended) — adds 420 LOL pairs
+- **Extended dataset:** `extended_manifest.csv` in this repo — adds 420 LOL pairs (same HF dataset repo, extended locally)
 - **v1 model:** [tyakovenko/night-to-day-enhancement-model](https://huggingface.co/tyakovenko/night-to-day-enhancement-model) — best.pt / best_extended.pt
 - **v2 model:** [tyakovenko/night-to-day-enhancement-model-v2](https://huggingface.co/tyakovenko/night-to-day-enhancement-model-v2) — best_v2.pt (L1 + MS-SSIM)
 - **v3 model:** [tyakovenko/night-to-day-enhancement-model-v3](https://huggingface.co/tyakovenko/night-to-day-enhancement-model-v3) — best_v3.pt (Residual + ColorLoss)
@@ -57,10 +57,29 @@ pip install -r requirements.txt
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ```
 
-### 2. Train v4 (recommended — lamp suppression + global context)
+### 2. Train the baseline model (v1 — Transient Attributes, MSE)
+
+Training streams images from HF Hub on first run (~1,266 files, cached locally after).
 
 ```bash
-python train_v4.py \
+python v1/train.py \
+  --epochs 30 \
+  --batch-size 8 \
+  --crop-size 128 \
+  --base-filters 16 \
+  --lr 1e-4 \
+  --workers 4
+```
+
+Expected outcome: `checkpoints/best.pt` at ~epoch 22, val MSE avg ≈ **0.029**.
+Runtime: ~90–110s/epoch on CPU.
+
+### 3. Train v4 (recommended — lamp suppression + global context)
+
+Requires `checkpoints/best.pt` from step 2 as the warm-start checkpoint.
+
+```bash
+python v4/train_v4.py \
   --epochs 30 \
   --batch-size 4 \
   --crop-size 176 \
@@ -74,23 +93,6 @@ python train_v4.py \
 
 Expected outcome: `checkpoints/best_v4.pt` at ~epoch 25, val MSE avg ≈ **0.028**.
 Runtime: ~220s/epoch on CPU.
-
-### 3. Train the baseline model (v1 — Transient Attributes, MSE)
-
-Training streams images from HF Hub on first run (~1,266 files, cached locally after).
-
-```bash
-python train.py \
-  --epochs 30 \
-  --batch-size 8 \
-  --crop-size 128 \
-  --base-filters 16 \
-  --lr 1e-4 \
-  --workers 4
-```
-
-Expected outcome: `checkpoints/best.pt` at ~epoch 22, val MSE avg ≈ **0.029**.
-Runtime: ~90–110s/epoch on CPU.
 
 ### 4. Run inference on a single image
 
@@ -219,11 +221,11 @@ GlobalContextEncoder: [mean_R, mean_G, mean_B, std_R, std_G, std_B, p10_R, p10_G
 | `model.py` | U-Net + `GlobalContextEncoder`; `residual` (v3+) and `use_global_context` (v4) flags |
 | `losses.py` | `CombinedLoss`, `ColorLoss`, `WeightedL1Loss`, `LogL1Loss`, `V4Loss`, `PerceptualLoss` |
 | `dataset.py` | Dataset class; streams pairs from HF Hub via manifest CSV; gamma augmentation; global stats |
-| `train.py` | v1 baseline training loop |
-| `train_extended.py` | v1-extended fine-tuning (TA + LOL) |
-| `train_v2.py` | v2 — L1 + MS-SSIM loss |
-| `train_v3.py` | v3 — residual U-Net + ColorLoss |
-| `train_v4.py` | v4 — lamp suppression losses + global context + cosine LR |
+| `v1/train.py` | v1 baseline training loop |
+| `v1/train_extended.py` | v1-extended fine-tuning (TA + LOL) |
+| `v2/train_v2.py` | v2 — L1 + MS-SSIM loss |
+| `v3/train_v3.py` | v3 — residual U-Net + ColorLoss |
+| `v4/train_v4.py` | v4 — lamp suppression losses + global context + cosine LR |
 | `enhance.py` | Single-image inference + MSE evaluation (`--residual` flag for v3/v4) |
 | `app.py` | Gradio UI (also Docker entry point); v4 default |
 | `Dockerfile` | Python 3.11-slim, venv, CPU-only torch |
