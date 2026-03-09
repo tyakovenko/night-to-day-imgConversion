@@ -116,73 +116,17 @@ python enhance.py --input night.jpg --reference day.jpg \
 
 ## Model Progression
 
-Each generation targeted a specific failure mode identified in the previous one.
+Each generation targeted a specific failure mode identified in the previous one. See [`data/report.md`](data/report.md) for full per-model analysis, strength/weakness breakdown, and results.
 
-### v1 — Baseline (Transient Attributes, MSE)
+| Version | Key change | Best eval MSE | Best SSIM |
+|---------|-----------|--------------|-----------|
+| v1 | Baseline MSE on Transient Attributes | **0.0389** | **0.533** |
+| v1-extended | Fine-tuned on TA + LOL indoor data | 0.0431 | 0.465 |
+| v2 | Replaced MSE with L1 + MS-SSIM | 0.0443 | 0.445 |
+| v3 | Residual U-Net + ColorLoss (fixed gray outputs) | 0.0461 | 0.287 |
+| v4 | Lamp suppression losses + GlobalContextEncoder | 0.0477 | 0.310 |
 
-**Loss:** MSE · **Architecture:** UNet(residual=False)
-
-The baseline established the core pipeline. MSE directly optimises the evaluation metric and produces clean convergence. Produces the best raw eval MSE of any version. Outputs tend to be desaturated/gray: MSE pushes uncertain pixels toward the mean. The blue channel was consistently the hardest to recover.
-
----
-
-### v1-extended — LOL Fine-tune (TA + LOL, MSE)
-
-**Loss:** MSE · **Change:** Added 420 indoor LOL pairs
-
-Improved generalisation across scene types; best val MSE overall (0.027752). LOL is indoor data — slight domain mismatch for the outdoor eval pair means eval MSE is actually worse than v1 on `night.jpg`. The washed-out color problem persisted.
-
----
-
-### v2 — Perceptual Loss (TA + LOL, L1 + MS-SSIM)
-
-**Loss:** `0.84 × (1 − MS-SSIM) + 0.16 × L1` (Wang et al.) · **Architecture:** UNet(residual=False)
-
-MS-SSIM optimises structural similarity at multiple scales; L1 anchors absolute pixel values. Both losses are effectively color-blind — a gray sky matches a blue sky if luminance structure agrees. Sigmoid activations on uncertain units still converge toward mid-gray.
-
----
-
-### v3 — Residual + Color-Aware (TA + LOL, L1 + MS-SSIM + ColorLoss)
-
-**Loss:** `CombinedLoss + 0.5 × ColorLoss` · **Architecture:** UNet(residual=True)
-
-**Residual learning:** model predicts a Tanh delta [−1, 1] added to the input and clamped. Fixes gray outputs — the model only learns *what changes*, background is preserved via the skip. **ColorLoss:** differentiable BT.601 RGB → YCbCr; chrominance (Cb, Cr) penalised 2× vs luminance. Directly punishes desaturated outputs. Remaining problem: all losses still weight every pixel equally, so bright lamp pixels dominate gradients → streetlamp halos amplified.
-
----
-
-### v4 — Lamp Suppression + Global Context (TA + LOL, WeightedL1 + LogL1 + MS-SSIM + ColorLoss)
-
-**Loss:** `WeightedL1 + LogL1 + MS-SSIM + ColorLoss` · **Architecture:** UNet(residual=True, use_global_context=True)
-
-**WeightedL1:** `weight = 1 − clamp(Y_night, 0, 1)` — bright lamp pixels contribute near-zero gradient; dark ambient pixels dominate. **LogL1:** log-domain L1 compresses bright-pixel errors; distance between 0.90 and 0.95 is tiny in log space vs. 0.05 and 0.10. **GlobalContextEncoder:** per-channel (mean, std, p10) of the full input image injected at the bottleneck — lets the model distinguish "globally dark scene with isolated bright lamp" from "uniformly lit daytime scene." **Staged ColorLoss:** zero for epochs 1–5, linear ramp over epochs 6–10, avoids gradient conflict during warm-start recalibration. **LR:** `CosineAnnealingWarmRestarts(T_0=10)`.
-
----
-
-## Results
-
-### Validation MSE (on held-out scenes from training data)
-
-| Model | Val MSE avg | Best epoch | Loss |
-|-------|-------------|------------|------|
-| v1 — Baseline (TA) | 0.028953 | 22 | MSE |
-| v1-extended (TA + LOL) | **0.027752** | 19 | MSE |
-| v2 (TA + LOL) | 0.028914 | 10 | L1 + MS-SSIM |
-| v3 (TA + LOL, residual) | 0.050844 | 18 | L1 + MS-SSIM + ColorLoss |
-| v4 (TA + LOL, residual + global ctx) | 0.028453 | 25 | WeightedL1 + LogL1 + MS-SSIM + ColorLoss |
-
-### Evaluation on held-out pair `night.jpg` / `day.jpg` (1024×737)
-
-| Model | MSE_R | MSE_G | MSE_B | MSE_avg | SSIM |
-|-------|-------|-------|-------|---------|------|
-| v1 — Baseline | 0.037988 | 0.035524 | 0.043262 | **0.038925** | **0.5329** |
-| v1-extended | 0.050318 | 0.038497 | 0.040582 | 0.043132 | 0.4653 |
-| v2 | 0.051711 | 0.038521 | 0.042594 | 0.044275 | 0.4448 |
-| v3 (residual + color) | 0.048779 | 0.039017 | 0.050610 | 0.046135 | 0.2871 |
-| v4 (lamp suppression) | 0.059873 | 0.036027 | 0.047200 | 0.047700 | 0.3095 |
-
-> **Trade-off:** v1 wins on raw MSE and SSIM. v3/v4 sacrifice pixel accuracy on bright lamp pixels (which dominate `night.jpg`) for better colour fidelity and lamp suppression. The right choice depends on whether the evaluation is metric-based or perceptual.
-
-> **Note:** v3/v4 use `residual=True`. Pass `--residual` to `enhance.py` for correct inference — these checkpoints predate that flag being saved in args.
+> v3/v4 use `residual=True` — pass `--residual` to `enhance.py` for correct inference.
 
 ---
 
@@ -236,4 +180,4 @@ GlobalContextEncoder: [mean_R, mean_G, mean_B, std_R, std_G, std_B, p10_R, p10_G
 
 ## Generative AI Use Disclaimer
 
-Generative AI was used to crate the code and write some documentation to keep track of the project's progress. All of the final reports and code was reviewed.
+Claude Code (Anthropic) was used as the primary AI assistant for code scaffolding, training loop implementation, and documentation. All architectural decisions, hyperparameter choices, and experimental results are the author's own. Dataset curation, threshold selection, and model evaluation were performed and verified independently. All final reports and code were reviewed.
