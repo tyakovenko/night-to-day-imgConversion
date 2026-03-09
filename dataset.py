@@ -35,6 +35,23 @@ def _load_image_rgb(path: str) -> np.ndarray:
     return np.array(img, dtype=np.float32) / 255.0
 
 
+def _compute_global_stats(img: np.ndarray) -> np.ndarray:
+    """
+    Compute per-channel (mean, std, p10) from a [H,W,3] float32 image in [0,1].
+
+    Returns a (9,) float32 array: (mean_R, mean_G, mean_B, std_R, std_G, std_B,
+                                    p10_R,  p10_G,  p10_B)
+
+    These statistics let the model distinguish a globally dark scene from one
+    with a few bright lamp pixels — information that a local crop cannot provide.
+    """
+    stats = []
+    for c in range(3):
+        ch = img[:, :, c].ravel()
+        stats.extend([ch.mean(), ch.std(), float(np.percentile(ch, 10))])
+    return np.array(stats, dtype=np.float32)
+
+
 def _fetch_image(hf_prefix: str, rel_path: str, repo_id: str = HF_REPO_ID) -> str:
     """
     Download image from HF Hub (cached to ~/.cache/huggingface/hub).
@@ -57,11 +74,17 @@ class LowLightDataset(Dataset):
     Paired (low-light, day-target) dataset.
 
     Args:
-        manifest_df: DataFrame with columns from low_light_manifest.csv.
-        crop_size:   Random crop size for training. None = full resolution.
-        augment:     If True, apply horizontal flip augmentation.
-        cache_dir:   Optional local directory to cache downloaded images.
-                     Defaults to HF hub cache (~/.cache/huggingface/hub).
+        manifest_df:        DataFrame with columns from low_light_manifest.csv.
+        crop_size:          Random crop size for training. None = full resolution.
+        augment:            If True, apply horizontal flip augmentation.
+        augment_color:      If True, apply random gamma to the low-light input
+                            only (ll ** Uniform(0.6, 1.4)). Prevents overfitting
+                            to the TA sensor brightness profile.
+        return_global_stats: If True, each item returns a 3-tuple
+                            (ll_t, dt_t, stats_t) where stats_t is a (9,) tensor
+                            of per-channel (mean, std, p10) computed from the
+                            full (uncropped, pre-augmentation) low-light image.
+                            Used by GlobalContextEncoder in model.py.
     """
 
     def __init__(
@@ -69,15 +92,19 @@ class LowLightDataset(Dataset):
         manifest_df: pd.DataFrame,
         crop_size: Optional[int] = 256,
         augment: bool = True,
+        augment_color: bool = False,
+        return_global_stats: bool = False,
     ):
         self.df = manifest_df.reset_index(drop=True)
         self.crop_size = crop_size
         self.augment = augment
+        self.augment_color = augment_color
+        self.return_global_stats = return_global_stats
 
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         row = self.df.iloc[idx]
 
         # Fetch from HF Hub (returns cached local path after first download).
@@ -89,6 +116,11 @@ class LowLightDataset(Dataset):
         # Load as float32 RGB in [0, 1]
         ll_img = _load_image_rgb(ll_path)
         dt_img = _load_image_rgb(dt_path)
+
+        # Compute global stats from the full image before any spatial cropping.
+        # Stats capture scene-level brightness distribution (e.g. globally dark
+        # vs. dark-with-bright-lamps) — information that a local crop may miss.
+        global_stats = _compute_global_stats(ll_img) if self.return_global_stats else None
 
         # Random crop (training only)
         if self.crop_size is not None:
@@ -102,6 +134,17 @@ class LowLightDataset(Dataset):
         # HWC -> CHW tensor
         ll_t = torch.from_numpy(ll_img.transpose(2, 0, 1))
         dt_t = torch.from_numpy(dt_img.transpose(2, 0, 1))
+
+        # Gamma augmentation on low-light input only (not target).
+        # ll ** gamma darkens (gamma > 1) or brightens (gamma < 1) the input,
+        # preventing overfitting to the TA sensor color/brightness profile.
+        if self.augment and self.augment_color:
+            gamma = random.uniform(0.6, 1.4)
+            ll_t = torch.clamp(ll_t ** gamma, 0.0, 1.0)
+
+        if self.return_global_stats:
+            stats_t = torch.from_numpy(global_stats)
+            return ll_t, dt_t, stats_t
 
         return ll_t, dt_t
 

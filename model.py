@@ -45,6 +45,35 @@ class UpBlock(nn.Module):
         return self.conv(x)
 
 
+class GlobalContextEncoder(nn.Module):
+    """
+    Encode per-channel global statistics of the full input image into a channel
+    embedding that is broadcast-added to the U-Net bottleneck.
+
+    Input:  [B, 9] — (mean_R, mean_G, mean_B, std_R, std_G, std_B, p10_R, p10_G, p10_B)
+    Output: [B, out_channels, 1, 1] — broadcast-ready for addition to bottleneck
+
+    This lets the model distinguish a pixel that is bright because of a streetlamp
+    (locally isolated bright spot in an otherwise dark scene) from ambient daylight
+    (globally high luminance). The crop-level encoder cannot see this distinction.
+
+    Args:
+        out_channels: must match the bottleneck channel count (base_filters * 16)
+    """
+
+    def __init__(self, out_channels: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(9, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, out_channels),
+        )
+
+    def forward(self, stats: torch.Tensor) -> torch.Tensor:
+        # stats: [B, 9] -> [B, out_channels] -> [B, out_channels, 1, 1]
+        return self.net(stats).unsqueeze(-1).unsqueeze(-1)
+
+
 class UNet(nn.Module):
     """
     4-level U-Net.
@@ -59,10 +88,12 @@ class UNet(nn.Module):
     """
 
     def __init__(self, in_channels: int = 3, out_channels: int = 3,
-                 base_filters: int = 32, residual: bool = False):
+                 base_filters: int = 32, residual: bool = False,
+                 use_global_context: bool = False):
         super().__init__()
         f = base_filters
         self.residual = residual
+        self.use_global_context = use_global_context
 
         # Encoder
         self.enc1 = ConvBlock(in_channels, f)        # -> f
@@ -73,6 +104,12 @@ class UNet(nn.Module):
 
         # Bottleneck
         self.bottleneck = ConvBlock(f * 8, f * 16)   # -> 16f
+
+        # Optional global context injection at bottleneck.
+        # Encodes scene-level stats (mean/std/p10 per channel) into a
+        # (f*16)-dim embedding added to every spatial position in the bottleneck.
+        if use_global_context:
+            self.global_ctx = GlobalContextEncoder(out_channels=f * 16)
 
         # Decoder
         self.dec4 = UpBlock(f * 16, f * 8, f * 8)
@@ -87,7 +124,13 @@ class UNet(nn.Module):
             activation,
         )
 
-    def forward(self, x):
+    def forward(self, x, global_stats=None):
+        """
+        Args:
+            x:            [B, 3, H, W] low-light input
+            global_stats: [B, 9] per-channel (mean, std, p10) of the full input
+                          image. Required when use_global_context=True.
+        """
         x_input = x  # saved for residual addition
 
         # Encode
@@ -98,6 +141,10 @@ class UNet(nn.Module):
 
         # Bottleneck
         b = self.bottleneck(self.pool(e4))
+
+        # Inject global context: broadcast [B, C, 1, 1] across spatial dims
+        if self.use_global_context and global_stats is not None:
+            b = b + self.global_ctx(global_stats)
 
         # Decode with skip connections
         d4 = self.dec4(b, e4)

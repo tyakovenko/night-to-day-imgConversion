@@ -21,6 +21,7 @@ import torch
 from PIL import Image
 
 from model import UNet
+from dataset import _compute_global_stats
 
 
 def load_image_rgb(path: str) -> np.ndarray:
@@ -75,7 +76,8 @@ def pad_to_multiple(t: torch.Tensor, multiple: int = 16):
     return t, (pad_h, pad_w)
 
 
-def enhance(input_path: str, checkpoint_path: str, base_filters: int | None = None) -> np.ndarray:
+def enhance(input_path: str, checkpoint_path: str, base_filters: int | None = None,
+            residual_override: bool | None = None) -> np.ndarray:
     """
     Run inference on a single image at full resolution.
     Returns enhanced image as HWC float32 array in [0, 1].
@@ -86,17 +88,32 @@ def enhance(input_path: str, checkpoint_path: str, base_filters: int | None = No
 
     ckpt = torch.load(checkpoint_path, map_location=device)
 
-    # Auto-detect base_filters from checkpoint to avoid flag/checkpoint mismatch
+    # Auto-detect architecture flags from checkpoint to avoid mismatch
+    saved_args = ckpt.get("args", {})
     if base_filters is None:
-        base_filters = ckpt.get("args", {}).get("base_filters", 16)
+        base_filters = saved_args.get("base_filters", 16)
+    # residual is not saved in v3/v4 checkpoints — caller must pass --residual for those
+    residual = residual_override if residual_override is not None else saved_args.get("residual", False)
+    use_global_ctx  = saved_args.get("global_context", False)
 
-    model = UNet(base_filters=base_filters).to(device)
+    model = UNet(
+        base_filters=base_filters,
+        residual=residual,
+        use_global_context=use_global_ctx,
+    ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
     input_arr = load_image_rgb(input_path)
     h_orig, w_orig = input_arr.shape[:2]
     input_t = image_to_tensor(input_arr).to(device)
+
+    # Compute per-channel global stats from the full image when the model
+    # was trained with GlobalContextEncoder (--global-context flag).
+    global_stats_t = None
+    if use_global_ctx:
+        stats = _compute_global_stats(input_arr)
+        global_stats_t = torch.from_numpy(stats).unsqueeze(0).to(device)  # [1, 9]
 
     # U-Net has 4 MaxPool layers → H and W must be divisible by 16.
     # Eval images (1024×737) have H%16=1, so 15px of reflect padding is added
@@ -105,7 +122,7 @@ def enhance(input_path: str, checkpoint_path: str, base_filters: int | None = No
     input_t, (pad_h, pad_w) = pad_to_multiple(input_t, multiple=16)
 
     with torch.no_grad():
-        output_t = model(input_t)
+        output_t = model(input_t, global_stats=global_stats_t)
 
     # Crop back to original dimensions before returning
     if pad_h > 0 or pad_w > 0:
@@ -123,6 +140,9 @@ def main():
     parser.add_argument("--checkpoint",  default="checkpoints/best.pt")
     parser.add_argument("--base-filters", type=int, default=None,
                         help="Base filters for U-Net (auto-detected from checkpoint if omitted)")
+    parser.add_argument("--residual", action="store_true", default=None,
+                        help="Force residual mode (needed for v3/v4 checkpoints which predate "
+                             "the residual arg being saved; auto-detected when possible)")
     args = parser.parse_args()
 
     if not Path(args.checkpoint).exists():
@@ -136,7 +156,7 @@ def main():
     print(f"Input:      {args.input}")
     print(f"Checkpoint: {args.checkpoint}")
 
-    enhanced = enhance(args.input, args.checkpoint, args.base_filters)
+    enhanced = enhance(args.input, args.checkpoint, args.base_filters, residual_override=args.residual)
 
     # Save output — preserve input dimensions (no resize)
     out_uint8 = (np.clip(enhanced, 0.0, 1.0) * 255).round().astype(np.uint8)

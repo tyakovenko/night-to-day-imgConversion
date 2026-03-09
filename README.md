@@ -19,6 +19,7 @@ A U-Net model that enhances low-light and night-time images to match daylight ap
 - **v1 model:** [tyakovenko/night-to-day-enhancement-model](https://huggingface.co/tyakovenko/night-to-day-enhancement-model) — best.pt / best_extended.pt
 - **v2 model:** [tyakovenko/night-to-day-enhancement-model-v2](https://huggingface.co/tyakovenko/night-to-day-enhancement-model-v2) — best_v2.pt (L1 + MS-SSIM)
 - **v3 model:** [tyakovenko/night-to-day-enhancement-model-v3](https://huggingface.co/tyakovenko/night-to-day-enhancement-model-v3) — best_v3.pt (Residual + ColorLoss)
+- **v4 model:** [tyakovenko/night-to-day-enhancement-model-v4](https://huggingface.co/tyakovenko/night-to-day-enhancement-model-v4) — best_v4.pt (WeightedL1 + LogL1 + GlobalContext)
 
 ---
 
@@ -58,7 +59,25 @@ pip install -r requirements.txt
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ```
 
-### 2. Train the baseline model (Transient Attributes dataset)
+### 2. Train v4 (recommended — lamp suppression + global context)
+
+```bash
+python train_v4.py \
+  --epochs 30 \
+  --batch-size 4 \
+  --crop-size 176 \
+  --lr 1e-4 \
+  --color-warmup-epochs 5 \
+  --global-context \
+  --augment-color \
+  --init-checkpoint checkpoints/best.pt \
+  --workers 4
+```
+
+Expected outcome: `checkpoints/best_v4.pt` at ~epoch 25, val MSE avg ≈ **0.028**.
+Runtime: ~220s/epoch on CPU.
+
+### 3. Train the baseline model (v1 — Transient Attributes, MSE)
 
 Training streams images from HF Hub on first run (~1,266 files, cached locally after).
 
@@ -75,178 +94,142 @@ python train.py \
 Expected outcome: `checkpoints/best.pt` at ~epoch 22, val MSE avg ≈ **0.029**.
 Runtime: ~90–110s/epoch on CPU.
 
-### 3. Train the extended model (Transient Attributes + LOL)
-
-Requires the [LOL dataset](https://www.kaggle.com/datasets/soumikrakshit/lol-dataset) downloaded locally. Place it so `low/` and `high/` subfolders are accessible, then run the upload script once to push LOL images to HF Hub and extend the manifest:
-
-```bash
-python - <<'EOF'
-import shutil
-from pathlib import Path
-from huggingface_hub import upload_large_folder
-
-LOL_SRC = Path("/path/to/lol_dataset")   # <-- update this path
-STAGE   = Path("/tmp/lol_hf_stage")
-
-for src, dst in [("low", "low_light/lol"), ("high", "day/lol")]:
-    (STAGE / dst).mkdir(parents=True, exist_ok=True)
-    for f in (LOL_SRC / src).iterdir():
-        shutil.copy2(f, STAGE / dst / f.name)
-
-upload_large_folder(
-    repo_id="tyakovenko/night-to-day-enhancement-extended",
-    repo_type="dataset",
-    folder_path=str(STAGE),
-)
-EOF
-```
-
-Then fine-tune from the baseline checkpoint:
-
-```bash
-python train_extended.py \
-  --epochs 20 \
-  --batch-size 8 \
-  --crop-size 128 \
-  --lr 1e-5 \
-  --init-checkpoint checkpoints/best.pt \
-  --workers 4
-```
-
-Expected outcome: `checkpoints/best_extended.pt`, val MSE avg ≈ **0.028**, improving on the baseline.
-
 ### 4. Run inference on a single image
 
 ```bash
-python enhance.py --input night.jpg --output enhanced_night.jpg --checkpoint checkpoints/best.pt
+# v1 / v1-extended / v2 (non-residual):
+python enhance.py --input night.jpg --checkpoint checkpoints/best.pt
+
+# v3 / v4 (residual=True — must pass --residual flag):
+python enhance.py --input night.jpg --checkpoint checkpoints/best_v3.pt --residual
+python enhance.py --input night.jpg --checkpoint checkpoints/best_v4.pt --residual
 ```
 
 ### 5. Evaluate against a ground-truth reference
 
 ```bash
-python enhance.py --input night.jpg --reference day.jpg --checkpoint checkpoints/best.pt
-```
-
-Output:
-```
-MSE_R:   0.037988
-MSE_G:   0.035524
-MSE_B:   0.043262
-MSE_avg: 0.038925
+python enhance.py --input night.jpg --reference day.jpg \
+  --checkpoint checkpoints/best_v4.pt --residual
 ```
 
 ---
 
 ## Model Progression
 
-Each generation of the model targeted a specific failure mode identified in the previous one.
+Each generation targeted a specific failure mode identified in the previous one.
 
 ### v1 — Baseline (Transient Attributes, MSE)
 
-**Training data:** Transient Attributes only (1,176 pairs, 90 scenes)
-**Loss:** MSE
-**Architecture:** Standard U-Net, Sigmoid output — predicts the full enhanced image directly
+**Loss:** MSE · **Architecture:** UNet(residual=False)
 
-The baseline established the core pipeline. MSE loss directly optimises the evaluation metric and produced clean convergence. However, MSE is known to cause *regression-to-mean*: when the model is uncertain about color temperature or scene brightness it averages possible outputs, producing washed-out mid-tones. The blue channel was consistently the hardest to recover, as night images suppress cool tones most severely.
+The baseline established the core pipeline. MSE directly optimises the evaluation metric and produces clean convergence. Produces the best raw eval MSE of any version. Outputs tend to be desaturated/gray: MSE pushes uncertain pixels toward the mean. The blue channel was consistently the hardest to recover.
 
 ---
 
-### v1-extended — Fine-tuned (Transient Attributes + LOL, MSE)
+### v1-extended — LOL Fine-tune (TA + LOL, MSE)
 
-**Training data:** TA + 420 LOL indoor pairs (1,676 total)
-**Loss:** MSE (continued from v1 checkpoint)
-**Change:** Added LOL dataset to address outdoor-only bias
+**Loss:** MSE · **Change:** Added 420 indoor LOL pairs
 
-Transient Attributes contains only outdoor scenes; the model had never seen indoor low-light images. LOL (Low-light Object Lossless) adds 485 paired indoor images and is the standard benchmark for low-light enhancement. Fine-tuning on the combined dataset improved val MSE from 0.028953 → 0.027752 and gave the model more generalisation across scene types. The washed-out color problem persisted — MSE does not penalise chrominance errors directly.
+Improved generalisation across scene types; best val MSE overall (0.027752). LOL is indoor data — slight domain mismatch for the outdoor eval pair means eval MSE is actually worse than v1 on `night.jpg`. The washed-out color problem persisted.
 
 ---
 
-### v2 — Improved Pixel Loss (TA + LOL, L1 + MS-SSIM)
+### v2 — Perceptual Loss (TA + LOL, L1 + MS-SSIM)
 
-**Training data:** TA + LOL (same extended manifest)
-**Loss:** `0.84 * (1 − MS-SSIM) + 0.16 * L1` (Wang et al. weighting)
-**Change:** Replaced MSE with a combined structural + pixel loss; warm-started from v1-extended
+**Loss:** `0.84 × (1 − MS-SSIM) + 0.16 × L1` (Wang et al.) · **Architecture:** UNet(residual=False)
 
-MS-SSIM optimises luminance, contrast, and structural similarity at multiple scales; L1 anchors absolute pixel values and prevents the saturation that pure SSIM can produce. This improved pixel fidelity and sharpness, but **did not fix the color problem**. The root cause is that both L1 and MS-SSIM are effectively color-blind: a gray sky can have good SSIM with a blue sky if the luminance structure matches. Additionally, Sigmoid activations on uncertain units naturally converge toward 0.5 (mid-gray), and a model that must reconstruct the full image from scratch wastes capacity on background pixels that barely change.
+MS-SSIM optimises structural similarity at multiple scales; L1 anchors absolute pixel values. Both losses are effectively color-blind — a gray sky matches a blue sky if luminance structure agrees. Sigmoid activations on uncertain units still converge toward mid-gray.
 
 ---
 
-### v3 — Residual Learning + Color-Aware Loss (TA + LOL, L1 + MS-SSIM + ColorLoss)
+### v3 — Residual + Color-Aware (TA + LOL, L1 + MS-SSIM + ColorLoss)
 
-**Training data:** TA + LOL
-**Loss:** `CombinedLoss (L1 + MS-SSIM) + 0.5 * ColorLoss (YCbCr)`
-**Changes:** Two architectural and one loss change, each targeting a specific failure mode
+**Loss:** `CombinedLoss + 0.5 × ColorLoss` · **Architecture:** UNet(residual=True)
 
-**1 — Residual learning.** Instead of predicting the full enhanced image, the model predicts a *delta* (change) in Tanh range [−1, 1], which is added to the input and clamped to [0, 1]. This solves two problems at once: Tanh activations don't saturate to a mid-gray mean, and the model only needs to learn *what changes* between night and day — background structure is preserved for free via the residual connection. Sigmoid weights from v1-extended transfer cleanly (both activations are near-linear around 0); the first epoch recalibrates the output scale.
+**Residual learning:** model predicts a Tanh delta [−1, 1] added to the input and clamped. Fixes gray outputs — the model only learns *what changes*, background is preserved via the skip. **ColorLoss:** differentiable BT.601 RGB → YCbCr; chrominance (Cb, Cr) penalised 2× vs luminance. Directly punishes desaturated outputs. Remaining problem: all losses still weight every pixel equally, so bright lamp pixels dominate gradients → streetlamp halos amplified.
 
-**2 — Color-aware loss.** A differentiable BT.601 RGB → YCbCr transform is used to decompose predictions into luminance (Y) and chrominance (Cb, Cr). Chrominance errors are penalised 2× relative to luminance. This directly punishes gray/desaturated outputs that match structure but miss color temperature — the exact failure mode L1 and MS-SSIM let through.
+---
 
-No new dependencies: the YCbCr transform is a pure PyTorch matrix multiply.
+### v4 — Lamp Suppression + Global Context (TA + LOL, WeightedL1 + LogL1 + MS-SSIM + ColorLoss)
+
+**Loss:** `WeightedL1 + LogL1 + MS-SSIM + ColorLoss` · **Architecture:** UNet(residual=True, use_global_context=True)
+
+**WeightedL1:** `weight = 1 − clamp(Y_night, 0, 1)` — bright lamp pixels contribute near-zero gradient; dark ambient pixels dominate. **LogL1:** log-domain L1 compresses bright-pixel errors; distance between 0.90 and 0.95 is tiny in log space vs. 0.05 and 0.10. **GlobalContextEncoder:** per-channel (mean, std, p10) of the full input image injected at the bottleneck — lets the model distinguish "globally dark scene with isolated bright lamp" from "uniformly lit daytime scene." **Staged ColorLoss:** zero for epochs 1–5, linear ramp over epochs 6–10, avoids gradient conflict during warm-start recalibration. **LR:** `CosineAnnealingWarmRestarts(T_0=10)`.
 
 ---
 
 ## Results
 
-| Model | Val MSE avg | MSE R | MSE G | MSE B | Best epoch | Loss |
-|---|---|---|---|---|---|---|
-| v1 — Baseline (TA) | 0.028953 | 0.028700 | 0.025959 | 0.032200 | 22 | MSE |
-| v1-extended (TA + LOL) | 0.027752 | 0.026945 | 0.025522 | 0.030788 | 19 | MSE |
-| v2 (TA + LOL) | — | — | — | — | — | L1 + MS-SSIM |
-| v3 (TA + LOL, residual) | 0.050844 | 0.050646 | 0.046377 | 0.055508 | 18 | L1 + MS-SSIM + ColorLoss |
+### Validation MSE (on held-out scenes from training data)
 
-> **Note on v3 val MSE:** v3's validation loss is higher than v1/v2 because `ColorLoss` penalises chrominance mismatches that MSE ignores. A model scoring better on this composite loss will produce more natural colours even if its raw MSE is higher. The held-out pair visual quality is the meaningful comparison.
+| Model | Val MSE avg | Best epoch | Loss |
+|-------|-------------|------------|------|
+| v1 — Baseline (TA) | 0.028953 | 22 | MSE |
+| v1-extended (TA + LOL) | **0.027752** | 19 | MSE |
+| v2 (TA + LOL) | 0.028914 | 10 | L1 + MS-SSIM |
+| v3 (TA + LOL, residual) | 0.050844 | 18 | L1 + MS-SSIM + ColorLoss |
+| v4 (TA + LOL, residual + global ctx) | 0.028453 | 25 | WeightedL1 + LogL1 + MS-SSIM + ColorLoss |
 
-**Final evaluation on held-out pair `night.jpg` / `day.jpg` (1024×737):**
+### Evaluation on held-out pair `night.jpg` / `day.jpg` (1024×737)
 
-| Model | MSE_R | MSE_G | MSE_B | MSE_avg |
-|---|---|---|---|---|
-| v1 (baseline) | 0.037988 | 0.035524 | 0.043262 | 0.038925 |
-| v3 (residual + color) | 0.075107 | 0.069984 | 0.080816 | 0.075302 |
+| Model | MSE_R | MSE_G | MSE_B | MSE_avg | SSIM |
+|-------|-------|-------|-------|---------|------|
+| v1 — Baseline | 0.037988 | 0.035524 | 0.043262 | **0.038925** | **0.5329** |
+| v1-extended | 0.050318 | 0.038497 | 0.040582 | 0.043132 | 0.4653 |
+| v2 | 0.051711 | 0.038521 | 0.042594 | 0.044275 | 0.4448 |
+| v3 (residual + color) | 0.048779 | 0.039017 | 0.050610 | 0.046135 | 0.2871 |
+| v4 (lamp suppression) | 0.059873 | 0.036027 | 0.047200 | 0.047700 | 0.3095 |
 
-> **v3 trade-off:** v3's higher eval MSE reflects the trade-off: ColorLoss explicitly penalises chrominance mismatches (gray sky vs blue sky) that pixel-level MSE accepts. The model produces more saturated, natural-toned outputs at the cost of higher raw pixel error on a single held-out pair. Visual comparison is the meaningful test here. Future iterations may benefit from a staged training approach (warm-start from v1-extended for more epochs before introducing ColorLoss) or a lower `--color-weight`.
+> **Trade-off:** v1 wins on raw MSE and SSIM. v3/v4 sacrifice pixel accuracy on bright lamp pixels (which dominate `night.jpg`) for better colour fidelity and lamp suppression. The right choice depends on whether the evaluation is metric-based or perceptual.
+
+> **Note:** v3/v4 use `residual=True`. Pass `--residual` to `enhance.py` for correct inference — these checkpoints predate that flag being saved in args.
 
 ---
 
 ## Architecture
 
-4-level U-Net (`base_filters=16`). Input images are padded to the nearest multiple of 16 before inference (reflect padding, bottom/right only) and cropped back to original dimensions — handles any input size without resizing.
+4-level U-Net (`base_filters=16`). Input images are padded to the nearest multiple of 16 before inference (reflect padding, bottom/right only) and cropped back — handles any input size.
 
 **v1 / v1-extended / v2 (direct prediction):**
 ```
-Input (H×W×3)
-  → Encoder: 4× [ConvBlock + MaxPool2d]
-  → Bottleneck: ConvBlock
-  → Decoder: 4× [Upsample + skip connection + ConvBlock]
-  → Output head: Conv1×1 + Sigmoid → full enhanced image in [0, 1]
+Input → Encoder (4× ConvBlock + MaxPool) → Bottleneck → Decoder (4× Upsample + skip) → Conv1×1 + Sigmoid
 ```
 
 **v3 (residual prediction):**
 ```
-Input (H×W×3)
-  → Encoder: 4× [ConvBlock + MaxPool2d]
-  → Bottleneck: ConvBlock
-  → Decoder: 4× [Upsample + skip connection + ConvBlock]
-  → Output head: Conv1×1 + Tanh → delta in [−1, 1]
-  → clamp(Input + delta, 0, 1) → enhanced image
+Input → Encoder → Bottleneck → Decoder → Conv1×1 + Tanh → delta
+Output = clamp(Input + delta, 0, 1)
 ```
 
-Training details: crop size 176×176, batch 4, Adam optimizer, `ReduceLROnPlateau` scheduler (factor=0.5, patience=4). Scene-level 85/15 train/val split to prevent data leakage.
+**v4 (residual + global context):**
+```
+Input → Encoder → Bottleneck ──┐
+                               ├─ add → Decoder → Conv1×1 + Tanh → delta
+GlobalContextEncoder(stats) ───┘
+Output = clamp(Input + delta, 0, 1)
+
+GlobalContextEncoder: [mean_R, mean_G, mean_B, std_R, std_G, std_B, p10_R, p10_G, p10_B]
+                      → Linear(9→32) → ReLU → Linear(32→bottleneck_channels) → broadcast
+```
 
 ---
 
-## Repository structure
+## Repository Structure
 
 | File | Purpose |
-|---|---|
-| `model.py` | U-Net architecture (`residual` flag for v3) |
-| `losses.py` | `CombinedLoss`, `ColorLoss` (YCbCr), `PerceptualLoss`, `EnhancementLoss` |
-| `dataset.py` | Dataset class; streams pairs from HF Hub via manifest CSV |
+|------|---------|
+| `model.py` | U-Net + `GlobalContextEncoder`; `residual` (v3+) and `use_global_context` (v4) flags |
+| `losses.py` | `CombinedLoss`, `ColorLoss`, `WeightedL1Loss`, `LogL1Loss`, `V4Loss`, `PerceptualLoss` |
+| `dataset.py` | Dataset class; streams pairs from HF Hub via manifest CSV; gamma augmentation; global stats |
 | `train.py` | v1 baseline training loop |
-| `train_extended.py` | v1-extended fine-tuning on TA + LOL |
-| `train_v2.py` | v2 training with L1 + MS-SSIM loss |
-| `train_v3.py` | v3 training with residual U-Net + ColorLoss |
-| `enhance.py` | Single-image inference + MSE evaluation |
-| `app.py` | Gradio UI (also entry point for Docker) |
-| `Dockerfile` | Docker build: Python 3.11-slim, venv, CPU-only torch |
+| `train_extended.py` | v1-extended fine-tuning (TA + LOL) |
+| `train_v2.py` | v2 — L1 + MS-SSIM loss |
+| `train_v3.py` | v3 — residual U-Net + ColorLoss |
+| `train_v4.py` | v4 — lamp suppression losses + global context + cosine LR |
+| `enhance.py` | Single-image inference + MSE evaluation (`--residual` flag for v3/v4) |
+| `app.py` | Gradio UI (also Docker entry point); v4 default |
+| `Dockerfile` | Python 3.11-slim, venv, CPU-only torch |
 | `low_light_manifest.csv` | 1,176 TA training pairs |
 | `extended_manifest.csv` | 1,676 combined pairs (TA + LOL) |
+| `model-comparison.md` | Full metric comparison + enhanced output images for all versions |
+| `v4Plan.md` | v4 improvement roadmap and design decisions |

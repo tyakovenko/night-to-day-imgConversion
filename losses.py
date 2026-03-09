@@ -1,9 +1,12 @@
 """
 Loss functions for low-light image enhancement.
 
-CombinedLoss   — L1 + MS-SSIM (pixel fidelity + perceptual quality)
-ColorLoss      — YCbCr chrominance loss (penalises desaturated/gray outputs)
-PerceptualLoss — VGG-16 feature matching (relu2_2 + relu3_3)
+CombinedLoss    — L1 + MS-SSIM (pixel fidelity + perceptual quality)
+ColorLoss       — YCbCr chrominance loss (penalises desaturated/gray outputs)
+WeightedL1Loss  — input-luminance-weighted L1 (suppresses lamp gradients)
+LogL1Loss       — log-domain L1 (auto down-weights bright pixels)
+V4Loss          — WeightedL1 + LogL1 + MS-SSIM + ColorLoss (with staged warmup)
+PerceptualLoss  — VGG-16 feature matching (relu2_2 + relu3_3)
 EnhancementLoss — CombinedLoss + PerceptualLoss (full training loss)
 
 Reference: Wang et al., "Multi-Scale Structural Similarity for Image Quality Assessment"
@@ -67,6 +70,126 @@ class ColorLoss(nn.Module):
         lum   = F.l1_loss(y_p,  y_t)
         chrom = F.l1_loss(cb_p, cb_t) + F.l1_loss(cr_p, cr_t)
         return lum + 2.0 * chrom
+
+
+class WeightedL1Loss(nn.Module):
+    """
+    Input-luminance-weighted L1 loss.
+
+    Bright pixels (streetlamps, windows) contribute almost no gradient because
+    their weight approaches zero. Dark ambient pixels dominate the loss signal,
+    steering the model to correctly illuminate dark regions instead of
+    preserving lamp intensity.
+
+        weight = 1 - clamp(Y_night, 0, 1)
+
+    where Y_night is the BT.601 luminance of the *input* low-light image
+    (not pred or target). The caller must pass the original input as input_img.
+
+    # SOURCE: BT.601 luminance — https://www.itu.int/rec/R-REC-BT.601/
+    """
+
+    @staticmethod
+    def _luminance(x: torch.Tensor) -> torch.Tensor:
+        """BT.601 luminance from [B,3,H,W] RGB tensor in [0,1]."""
+        return 0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3]
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        input_img: torch.Tensor,
+    ) -> torch.Tensor:
+        weight = 1.0 - torch.clamp(self._luminance(input_img), 0.0, 1.0)
+        return (weight * torch.abs(pred - target)).mean()
+
+
+class LogL1Loss(nn.Module):
+    """
+    L1 loss in log domain: L1(log(pred + eps), log(target + eps)).
+
+    Compresses the gradient from bright pixels: the distance between 0.90 and
+    0.95 is tiny in log space, while the distance between 0.05 and 0.10 is
+    large. Automatically down-weights lamp intensity without explicit masking.
+
+    Args:
+        eps: small constant to avoid log(0). Default 1e-3.
+    """
+
+    def __init__(self, eps: float = 1e-3):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return F.l1_loss(
+            torch.log(pred + self.eps),
+            torch.log(target + self.eps),
+        )
+
+
+class V4Loss(nn.Module):
+    """
+    v4 training loss.
+
+    Components:
+      - WeightedL1:  input-luminance-weighted L1 (suppresses lamp gradients)
+      - LogL1:       log-domain L1 (auto down-weights bright pixels)
+      - MS-SSIM:     structural similarity
+      - ColorLoss:   YCbCr chrominance (with epoch-based warmup via set_color_scale)
+
+    The caller must pass the original low-light input as the third argument:
+        loss = criterion(pred, target, input_img)
+
+    ColorLoss is gated by _color_scale (0 → disabled, 1 → full weight).
+    Call set_color_scale(scale) at the start of each epoch to implement
+    the warmup schedule.
+
+    Args:
+        w_weighted_l1: weight for WeightedL1 term
+        w_log_l1:      weight for LogL1 term
+        w_ssim:        weight for (1 - MS-SSIM) term
+        color_weight:  final weight for ColorLoss
+        data_range:    max value of inputs (1.0 for [0,1] tensors)
+    """
+
+    def __init__(
+        self,
+        w_weighted_l1: float = 0.16,
+        w_log_l1: float = 0.16,
+        w_ssim: float = 0.68,
+        color_weight: float = 0.5,
+        data_range: float = 1.0,
+    ):
+        super().__init__()
+        self.weighted_l1  = WeightedL1Loss()
+        self.log_l1       = LogL1Loss()
+        self.color        = ColorLoss()
+        self.w_wl1        = w_weighted_l1
+        self.w_ll1        = w_log_l1
+        self.w_ssim       = w_ssim
+        self.color_weight = color_weight
+        self.data_range   = data_range
+        self._color_scale = 0.0  # updated each epoch by the trainer
+
+    def set_color_scale(self, scale: float) -> None:
+        """Set the current ColorLoss scale (0 = disabled, 1 = full weight)."""
+        self._color_scale = float(max(0.0, min(1.0, scale)))
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        input_img: torch.Tensor,
+    ) -> torch.Tensor:
+        ssim_val = ms_ssim(pred, target, data_range=self.data_range, size_average=True)
+        loss = (
+            self.w_wl1  * self.weighted_l1(pred, target, input_img)
+            + self.w_ll1 * self.log_l1(pred, target)
+            + self.w_ssim * (1.0 - ssim_val)
+        )
+        if self._color_scale > 0.0:
+            loss = loss + self._color_scale * self.color_weight * self.color(pred, target)
+        return loss
 
 
 class PerceptualLoss(nn.Module):

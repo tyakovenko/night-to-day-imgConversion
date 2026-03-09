@@ -10,19 +10,22 @@ import gradio as gr
 from huggingface_hub import hf_hub_download
 from skimage.metrics import structural_similarity as ssim_fn
 from model import UNet
+from dataset import _compute_global_stats
 
 # ── Model registry ─────────────────────────────────────────────────────────────
-# Each entry: (repo_id, filename, residual)
-# residual=True  → UNet(residual=True); model predicts a delta added to input
-# residual=False → UNet(residual=False); model predicts the full output directly
+# Each entry: (repo_id, filename, residual, global_context)
+# residual=True       → UNet predicts a Tanh delta added to input
+# global_context=True → UNet uses GlobalContextEncoder; inference computes
+#                       per-channel (mean, std, p10) from the full input image
 
 MODEL_OPTIONS = {
-    "v1 — best.pt  (Transient Attributes, MSE)":          ("tyakovenko/night-to-day-enhancement-model",    "best.pt",          False),
-    "v1-extended — best_extended.pt  (TA + LOL, MSE)":    ("tyakovenko/night-to-day-enhancement-model",    "best_extended.pt", False),
-    "v2 — best_v2.pt  (TA + LOL, L1 + MS-SSIM)":         ("tyakovenko/night-to-day-enhancement-model-v2", "best_v2.pt",       False),
-    "v3 — best_v3.pt  (TA + LOL, Residual + ColorLoss)":  ("tyakovenko/night-to-day-enhancement-model-v3", "best_v3.pt",       True),
+    "v1 — best.pt  (Transient Attributes, MSE)":                    ("tyakovenko/night-to-day-enhancement-model",    "best.pt",          False, False),
+    "v1-extended — best_extended.pt  (TA + LOL, MSE)":              ("tyakovenko/night-to-day-enhancement-model",    "best_extended.pt", False, False),
+    "v2 — best_v2.pt  (TA + LOL, L1 + MS-SSIM)":                   ("tyakovenko/night-to-day-enhancement-model-v2", "best_v2.pt",       False, False),
+    "v3 — best_v3.pt  (TA + LOL, Residual + ColorLoss)":            ("tyakovenko/night-to-day-enhancement-model-v3", "best_v3.pt",       True,  False),
+    "v4 — best_v4.pt  (TA + LOL, WeightedL1 + LogL1 + GlobalCtx)": ("tyakovenko/night-to-day-enhancement-model-v4", "best_v4.pt",       True,  True),
 }
-DEFAULT_MODEL = "v3 — best_v3.pt  (TA + LOL, Residual + ColorLoss)"
+DEFAULT_MODEL = "v4 — best_v4.pt  (TA + LOL, WeightedL1 + LogL1 + GlobalCtx)"
 
 # Cache loaded models by display name so switching is instant after first load
 _model_cache: dict = {}  # name → model | None
@@ -33,17 +36,18 @@ def get_model(model_name: str):
     if model_name in _model_cache:
         return _model_cache[model_name]
 
-    repo_id, filename, residual = MODEL_OPTIONS[model_name]
+    repo_id, filename, residual, global_context = MODEL_OPTIONS[model_name]
     try:
         ckpt_path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="model")
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         base_filters = ckpt.get("args", {}).get("base_filters", 16)
-        model = UNet(base_filters=base_filters, residual=residual)
+        model = UNet(base_filters=base_filters, residual=residual,
+                     use_global_context=global_context)
         model.load_state_dict(ckpt["model"])
         model.eval()
         print(f"Loaded {filename} from {repo_id} "
               f"(epoch {ckpt.get('epoch','?')}, val MSE {ckpt.get('val_mse', 0):.4f}, "
-              f"residual={residual})")
+              f"residual={residual}, global_context={global_context})")
         _model_cache[model_name] = model
     except Exception as e:
         print(f"Model load failed [{model_name}]: {e}")
@@ -112,13 +116,19 @@ def enhance_image(input_img: np.ndarray, model_name: str) -> tuple:
     model = get_model(model_name)
 
     if model is not None:
-        t = torch.from_numpy(
-            input_img.astype(np.float32) / 255.0
-        ).permute(2, 0, 1).unsqueeze(0)          # 1CHW
+        img_f32 = input_img.astype(np.float32) / 255.0
+        t = torch.from_numpy(img_f32).permute(2, 0, 1).unsqueeze(0)  # 1CHW
+
+        # Compute global stats if this model uses GlobalContextEncoder
+        _, _, _, global_context = MODEL_OPTIONS[model_name]
+        global_stats_t = None
+        if global_context:
+            stats = _compute_global_stats(img_f32)
+            global_stats_t = torch.from_numpy(stats).unsqueeze(0)  # [1, 9]
 
         t, (h_orig, w_orig) = pad_to_multiple(t, multiple=16)
         with torch.no_grad():
-            out = model(t)
+            out = model(t, global_stats=global_stats_t)
         out = out[:, :, :h_orig, :w_orig]
 
         result = out.squeeze(0).permute(1, 2, 0).numpy()
