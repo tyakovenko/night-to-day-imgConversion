@@ -1,8 +1,11 @@
-# Project Report — Night-to-Day Image Enhancement
+# Night-to-Day Image Enhancement
 
 **Author:** Taisiia Yakovenko
+
 **Date:** March 2026
+
 **GitHub:** [tyakovenko/night-to-day-imgConversion](https://github.com/tyakovenko/night-to-day-imgConversion)
+
 **HuggingFace:** [tyakovenko](https://huggingface.co/tyakovenko)
 
 ---
