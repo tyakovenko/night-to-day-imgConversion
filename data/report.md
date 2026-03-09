@@ -126,26 +126,59 @@ Eval pair: `night.jpg` / `day.jpg` (1024×737, out-of-distribution — not in tr
 
 ### Visual comparison
 
-Input (`night.jpg`) and ground truth (`day.jpg`) alongside each model's output on the same scene.
+The diagram below shows the warm-start lineage — arrows indicate which checkpoint each version initialised from, and the key problem each version targeted.
 
-| Input | Ground truth (day) |
-|:-----:|:-----------------:|
+```mermaid
+flowchart LR
+    V1["v1\nBaseline MSE\nMSE 0.0389 · SSIM 0.533"]
+    V1E["v1-extended\n+ LOL fine-tune\nMSE 0.0431 · SSIM 0.465"]
+    V2["v2\nL1 + MS-SSIM\nMSE 0.0443 · SSIM 0.445"]
+    V3["v3\nResidual + ColorLoss\nMSE 0.0461 · SSIM 0.287"]
+    V4["v4\nLamp suppression + GlobalCtx\nMSE 0.0477 · SSIM 0.310"]
+
+    V1 -->|"fine-tune on LOL"| V1E
+    V1E -->|"structural loss"| V2
+    V1E -->|"residual + color"| V3
+    V1 -->|"lamp suppress"| V4
+```
+
+Outputs on the eval pair (`night.jpg` → enhanced, compared to `day.jpg`), in the same progression order:
+
+**Reference images**
+
+| 🌙 Input (`night.jpg`) | ☀️ Ground truth (`day.jpg`) |
+|:---------------------:|:---------------------------:|
 | ![night](../night.jpg) | ![day](../day.jpg) |
 
-| v1 | v1-extended |
-|:--:|:-----------:|
-| ![v1](../v1/v1.png) | ![v1-extended](../v1/v1Extended.png) |
-| MSE 0.0389 · SSIM 0.533 | MSE 0.0431 · SSIM 0.465 |
+---
 
-| v2 | v3 |
-|:--:|:--:|
-| ![v2](../v2/v2.png) | ![v3](../v3/v3.png) |
-| MSE 0.0443 · SSIM 0.445 | MSE 0.0461 · SSIM 0.287 |
+**Step 1 — v1: Baseline MSE** · `best.pt` · MSE 0.0389 · SSIM 0.533
 
-| v4 | |
-|:--:|:--:|
-| ![v4](../v4/v4.png) | |
-| MSE 0.0477 · SSIM 0.310 | |
+![v1 output](../v1/v1.png)
+
+---
+
+**Step 2 — v1-extended: + LOL fine-tune** · `best_extended.pt` · MSE 0.0431 · SSIM 0.465
+
+![v1-extended output](../v1/v1Extended.png)
+
+---
+
+**Step 3 — v2: Structural loss (L1 + MS-SSIM)** · `best_v2.pt` · MSE 0.0443 · SSIM 0.445
+
+![v2 output](../v2/v2.png)
+
+---
+
+**Step 4 — v3: Residual + ColorLoss** · `best_v3.pt` · MSE 0.0461 · SSIM 0.287
+
+![v3 output](../v3/v3.png)
+
+---
+
+**Step 5 — v4: Lamp suppression + GlobalContextEncoder** · `best_v4.pt` · MSE 0.0477 · SSIM 0.310
+
+![v4 output](../v4/v4.png)
 
 ---
 
