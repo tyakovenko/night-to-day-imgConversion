@@ -26,7 +26,10 @@ def read_best_metrics() -> dict:
     best_mse = float("inf")
     with open(log) as f:
         for row in csv.DictReader(f):
-            mse = float(row["val_mse_avg"])
+            try:
+                mse = float(row["val_mse_avg"])
+            except (ValueError, TypeError):
+                continue  # skip duplicate header rows
             if mse < best_mse:
                 best_mse = mse
                 best_row = row
