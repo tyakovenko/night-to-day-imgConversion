@@ -170,7 +170,7 @@ CSS = """
 #ref-col { display: flex; align-items: flex-end; }
 """
 
-with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
+with gr.Blocks(title="Low-Light Enhancement") as demo:
 
     gr.Markdown("# 🌙 → ☀️  Low-Light Image Enhancement", elem_id="title")
     gr.Markdown(
@@ -243,4 +243,4 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
     )
 
 
-demo.launch(server_name="0.0.0.0", server_port=7860)
+demo.launch(server_name="0.0.0.0", server_port=7860, css=CSS)
