@@ -230,4 +230,8 @@ GlobalContextEncoder: [mean_R, mean_G, mean_B, std_R, std_G, std_B, p10_R, p10_G
 | `low_light_manifest.csv` | 1,176 TA training pairs |
 | `extended_manifest.csv` | 1,676 combined pairs (TA + LOL) |
 | `model-comparison.md` | Full metric comparison + enhanced output images for all versions |
-| `report.md` | Full report summarizing the application |
+| `data/report.md` | Full report summarizing the application |
+
+## Generative AI Use Disclaimer
+
+Generative AI was used to crate the code and write some documentation to keep track of the project's progress. All of the final reports and code was reviewed.
