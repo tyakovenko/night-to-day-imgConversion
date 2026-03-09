@@ -25,6 +25,7 @@ import torch.nn as nn
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.utils.data import DataLoader
 
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dataset import LowLightDataset, build_splits, _fetch_image
 from model import UNet, count_parameters
 

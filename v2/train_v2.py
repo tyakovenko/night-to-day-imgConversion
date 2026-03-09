@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dataset import (
     LowLightDataset,
     build_splits,

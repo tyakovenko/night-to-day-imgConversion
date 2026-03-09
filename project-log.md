@@ -340,3 +340,42 @@ Discovered that prior eval runs for v3 and v4 used wrong architecture (residual=
 | Phase 3 — HF Space | ✅ LIVE (v4 default) |
 | Model comparison doc | ✅ model-comparison.md |
 | All checkpoints on HF Hub | ✅ v1/v1-ext, v2, v3, v4 |
+
+---
+
+## Session End: 2026-03-09
+
+### What Was Completed
+
+- Implemented v4 improvement plan (WeightedL1Loss, LogL1Loss, V4Loss, GlobalContextEncoder, gamma augmentation, staged ColorLoss, CosineAnnealingWarmRestarts)
+- Trained v4: 30 epochs, best checkpoint epoch 25, val MSE **0.028453** (best of all versions)
+- Fixed enhance.py: auto-detects residual/global_context from checkpoint; added --residual override flag for v3/v4
+- Corrected eval numbers for all models (prior v3/v4 evals used wrong residual=False architecture)
+- Generated enhanced output images for all 5 model versions
+- Created model-comparison.md with full metric table (MSE + SSIM) and output images
+- Updated app.py: v4 added as default model with global stats inference path
+- Pushed best_v4.pt + model.py to tyakovenko/night-to-day-enhancement-model-v4 on HF Hub
+- Pushed app.py, model.py, dataset.py to HF Space (tyakovenko/night-to-day-enhancement)
+- Updated README.md with v4 section, corrected results table, architecture diagram
+- Committed and pushed all changes: commit 9a2315a
+
+### Final Eval Results (corrected — all models with correct architecture)
+
+| Model | MSE_avg | SSIM |
+|-------|---------|------|
+| v1 | 0.038925 | 0.5329 |
+| v1-extended | 0.043132 | 0.4653 |
+| v2 | 0.044275 | 0.4448 |
+| v3 | 0.046135 | 0.2871 |
+| v4 | 0.047700 | 0.3095 |
+
+### Open Tasks / Next Steps
+
+- Visual comparison of lamp halos: view enhanced_night_v4.jpg vs enhanced_night_v3.jpg side by side
+- Consider v4b with milder lamp-suppression weighting if raw eval MSE matters more than perceptual quality
+- Retinex decomposition (v5 path) — see v4Plan.md §3 for design; 1–2 day effort, CPU-feasible
+- Global context encoder (v4) not yet saved to app.py MODEL_OPTIONS with explicit (repo, file, residual, gc) tuple — already done ✓
+
+### Blockers
+
+None.

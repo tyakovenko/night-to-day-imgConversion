@@ -1,19 +1,28 @@
 """
-Training script v3 — Residual U-Net + Color-Aware Loss.
+Training script v4 — Lamp-suppressing losses + Global Context + Color warmup.
 
-Changes vs train_v2.py:
-  - Model:  UNet(residual=True) — predicts Tanh delta added to input
-  - Loss:   CombinedLoss (L1 + MS-SSIM) + color_weight * ColorLoss (YCbCr)
-  - Warm-start from best_extended.pt (MSE-trained, sigmoid) by default
-    (sigmoid weights load cleanly into Tanh model; first epoch recalibrates scale)
-  - Saves to checkpoints/best_v3.pt / last_v3.pt
-  - Logs to experiment_log_v3.csv
+Changes vs train_v3.py:
+  - Loss:    V4Loss (WeightedL1 + LogL1 + MS-SSIM + ColorLoss with staged warmup)
+             Both WeightedL1 and LogL1 down-weight bright lamp pixels, fixing the
+             streetlamp-amplification problem from v3.
+  - Arch:    UNet(residual=True, use_global_context=True) optional — adds a
+             GlobalContextEncoder that injects full-image brightness stats into
+             the bottleneck so the model can distinguish lamp pixels from sunlight.
+  - Aug:     Color jitter (gamma Uniform(0.6, 1.4) on low-light input only) prevents
+             overfitting to the TA sensor brightness profile.
+  - LR:      CosineAnnealingWarmRestarts(T_0=10) — smoother convergence.
+  - Init:    Warm-starts from best.pt (cleaner MSE baseline) not best_extended.pt.
+  - Saves to checkpoints/best_v4.pt / last_v4.pt
+  - Logs to experiment_log_v4.csv
 
 Usage:
-    python train_v3.py [--epochs 20] [--batch-size 4] [--crop-size 176]
-                       [--lr 1e-5] [--color-weight 0.5] [--workers 4]
-                       [--init-checkpoint checkpoints/best_extended.pt]
-                       [--resume checkpoints/last_v3.pt]
+    python train_v4.py [--epochs 30] [--batch-size 4] [--crop-size 176]
+                       [--lr 1e-4] [--color-weight 0.5] [--color-warmup-epochs 5]
+                       [--w-weighted-l1 0.16] [--w-log-l1 0.16] [--w-ssim 0.68]
+                       [--global-context] [--augment-color]
+                       [--workers 4]
+                       [--init-checkpoint checkpoints/best.pt]
+                       [--resume checkpoints/last_v4.pt]
 """
 
 import argparse
@@ -25,18 +34,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dataset import (
     LowLightDataset,
     build_splits,
     EXTENDED_MANIFEST_PATH,
+    MANIFEST_PATH,
     HF_REPO_ID,
     _fetch_image,
 )
 from model import UNet, count_parameters
-from losses import CombinedLoss, ColorLoss
+from losses import V4Loss
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -51,34 +61,31 @@ def channel_mse(pred: torch.Tensor, target: torch.Tensor) -> dict:
     return {"R": mse_r, "G": mse_g, "B": mse_b, "avg": (mse_r + mse_g + mse_b) / 3.0}
 
 
-# ── Combined v3 loss ──────────────────────────────────────────────────────────
-
-class V3Loss(nn.Module):
-    """CombinedLoss (L1 + MS-SSIM) + color_weight * ColorLoss (YCbCr)."""
-
-    def __init__(self, color_weight: float = 0.5, data_range: float = 1.0):
-        super().__init__()
-        self.pixel = CombinedLoss(data_range=data_range)
-        self.color = ColorLoss()
-        self.cw    = color_weight
-
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return self.pixel(pred, target) + self.cw * self.color(pred, target)
-
-
 # ── One epoch ─────────────────────────────────────────────────────────────────
 
-def run_epoch(model, loader, criterion, optimizer, device, is_train: bool):
+def run_epoch(model, loader, criterion, optimizer, device,
+              is_train: bool, use_global_context: bool):
     model.train() if is_train else model.eval()
     total_loss = 0.0
     all_preds, all_targets = [], []
 
     ctx = torch.enable_grad() if is_train else torch.no_grad()
     with ctx:
-        for ll, dt in loader:
+        for batch in loader:
+            if use_global_context:
+                ll, dt, stats = batch
+                stats = stats.to(device)
+            else:
+                ll, dt = batch
+                stats = None
+
             ll, dt = ll.to(device), dt.to(device)
-            pred = model(ll)
-            loss = criterion(pred, dt)
+
+            # model forward — pass global stats if available
+            pred = model(ll, global_stats=stats)
+
+            # criterion needs the original input for WeightedL1
+            loss = criterion(pred, dt, ll)
 
             if is_train:
                 optimizer.zero_grad()
@@ -98,34 +105,59 @@ def run_epoch(model, loader, criterion, optimizer, device, is_train: bool):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train U-Net v3 with residual learning + color-aware loss"
+        description="Train U-Net v4 with lamp-suppressing losses + global context"
     )
-    parser.add_argument("--epochs",            type=int,   default=20)
-    parser.add_argument("--batch-size",        type=int,   default=4)
-    parser.add_argument("--crop-size",         type=int,   default=176,
-                        help="176 is MS-SSIM minimum; larger = more context for color")
-    parser.add_argument("--lr",                type=float, default=1e-5)
-    parser.add_argument("--color-weight",      type=float, default=0.5,
-                        help="Weight for YCbCr ColorLoss (0 to disable, 0.5 default)")
-    parser.add_argument("--workers",           type=int,   default=4)
-    parser.add_argument("--val-fraction",      type=float, default=0.15)
-    parser.add_argument("--seed",              type=int,   default=42)
-    parser.add_argument("--checkpoint-dir",    type=str,   default="checkpoints")
-    parser.add_argument("--init-checkpoint",   type=str,   default=None,
+    parser.add_argument("--epochs",               type=int,   default=30)
+    parser.add_argument("--batch-size",           type=int,   default=4)
+    parser.add_argument("--crop-size",            type=int,   default=176,
+                        help="176 is MS-SSIM minimum; larger = more context")
+    parser.add_argument("--lr",                   type=float, default=1e-4)
+    # Loss weights
+    parser.add_argument("--w-weighted-l1",        type=float, default=0.16,
+                        help="Weight for input-luminance-weighted L1 term")
+    parser.add_argument("--w-log-l1",             type=float, default=0.16,
+                        help="Weight for log-domain L1 term")
+    parser.add_argument("--w-ssim",               type=float, default=0.68,
+                        help="Weight for (1 - MS-SSIM) term")
+    parser.add_argument("--color-weight",         type=float, default=0.5,
+                        help="Final weight for YCbCr ColorLoss")
+    parser.add_argument("--color-warmup-epochs",  type=int,   default=5,
+                        help="ColorLoss is 0 for first N epochs, then linear ramp "
+                             "over the next N epochs to full weight")
+    # Architecture
+    parser.add_argument("--global-context",       action="store_true",
+                        help="Add GlobalContextEncoder to bottleneck (scene-level stats)")
+    # Augmentation
+    parser.add_argument("--augment-color",        action="store_true",
+                        help="Apply gamma jitter to low-light input (Uniform(0.6, 1.4))")
+    # Training infra
+    parser.add_argument("--workers",              type=int,   default=4)
+    parser.add_argument("--val-fraction",         type=float, default=0.15)
+    parser.add_argument("--seed",                 type=int,   default=42)
+    parser.add_argument("--checkpoint-dir",       type=str,   default="checkpoints")
+    parser.add_argument("--init-checkpoint",      type=str,   default=None,
                         help="Checkpoint to warm-start from. "
-                             "Defaults to best_extended.pt if it exists, else best.pt. "
-                             "Sigmoid weights load cleanly into residual (Tanh) model.")
-    parser.add_argument("--resume",            type=str,   default=None,
-                        help="Resume v3 training from last_v3.pt")
+                             "Defaults to best.pt. strict=False so new GlobalContextEncoder "
+                             "weights initialise randomly while encoder/decoder transfer.")
+    parser.add_argument("--resume",               type=str,   default=None,
+                        help="Resume v4 training from last_v4.pt")
+    parser.add_argument("--manifest",             type=str,   default=None,
+                        help="Path to manifest CSV. Defaults to extended_manifest.csv "
+                             "if it exists, else low_light_manifest.csv")
     args = parser.parse_args()
+
+    # Resolve manifest
+    if args.manifest is not None:
+        manifest_path = Path(args.manifest)
+    elif EXTENDED_MANIFEST_PATH.exists():
+        manifest_path = EXTENDED_MANIFEST_PATH
+    else:
+        manifest_path = MANIFEST_PATH
 
     # Resolve default init checkpoint
     ckpt_dir = Path(args.checkpoint_dir)
     if args.init_checkpoint is None:
-        if (ckpt_dir / "best_extended.pt").exists():
-            args.init_checkpoint = str(ckpt_dir / "best_extended.pt")
-        else:
-            args.init_checkpoint = str(ckpt_dir / "best.pt")
+        args.init_checkpoint = str(ckpt_dir / "best.pt")
 
     # Reproducibility
     torch.manual_seed(args.seed)
@@ -134,29 +166,32 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"\n{'='*65}")
-    print(f"  Low-Light Enhancement — v3 Training (Residual + ColorLoss)")
-    print(f"{'='*65}")
-    print(f"  Device:              {device}")
-    print(f"  Init checkpoint:     {args.init_checkpoint}")
-    print(f"  Manifest:            {EXTENDED_MANIFEST_PATH}")
-    print(f"  Epochs:              {args.epochs}")
-    print(f"  Batch size:          {args.batch_size}")
-    print(f"  Crop size:           {args.crop_size}×{args.crop_size}")
-    print(f"  LR:                  {args.lr}")
-    print(f"  Color weight:        {args.color_weight}")
-    print(f"{'='*65}\n")
+    print(f"\n{'='*70}")
+    print(f"  Low-Light Enhancement — v4 Training")
+    print(f"  (WeightedL1 + LogL1 + MS-SSIM + ColorLoss w/ staged warmup)")
+    print(f"{'='*70}")
+    print(f"  Device:               {device}")
+    print(f"  Init checkpoint:      {args.init_checkpoint}")
+    print(f"  Manifest:             {manifest_path}")
+    print(f"  Epochs:               {args.epochs}")
+    print(f"  Batch size:           {args.batch_size}")
+    print(f"  Crop size:            {args.crop_size}×{args.crop_size}")
+    print(f"  LR:                   {args.lr}  (CosineAnnealingWarmRestarts T_0=10)")
+    print(f"  Loss weights:         wl1={args.w_weighted_l1}  log_l1={args.w_log_l1}"
+          f"  ssim={args.w_ssim}")
+    print(f"  Color weight:         {args.color_weight}"
+          f"  (warmup {args.color_warmup_epochs} epochs, ramp {args.color_warmup_epochs} epochs)")
+    print(f"  Global context:       {args.global_context}")
+    print(f"  Color augmentation:   {args.augment_color}")
+    print(f"{'='*70}\n")
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    if not EXTENDED_MANIFEST_PATH.exists():
-        raise FileNotFoundError(
-            f"Extended manifest not found: {EXTENDED_MANIFEST_PATH}\n"
-            "Run the LOL upload + manifest generation step first."
-        )
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
 
-    print("Building train/val splits (scene-level) from extended manifest ...")
+    print("Building train/val splits (scene-level) ...")
     train_df, val_df = build_splits(
-        manifest_path=EXTENDED_MANIFEST_PATH,
+        manifest_path=manifest_path,
         val_fraction=args.val_fraction,
         seed=args.seed,
     )
@@ -199,8 +234,20 @@ def main():
                 print(f"  {done}/{total}  ({rate:.0f} img/s  ETA {remaining:.0f}s)")
     print(f"  Done in {time.time()-t_fetch:.0f}s\n")
 
-    train_ds = LowLightDataset(train_df, crop_size=args.crop_size, augment=True)
-    val_ds   = LowLightDataset(val_df,   crop_size=args.crop_size, augment=False)
+    train_ds = LowLightDataset(
+        train_df,
+        crop_size=args.crop_size,
+        augment=True,
+        augment_color=args.augment_color,
+        return_global_stats=args.global_context,
+    )
+    val_ds = LowLightDataset(
+        val_df,
+        crop_size=args.crop_size,
+        augment=False,
+        augment_color=False,
+        return_global_stats=args.global_context,
+    )
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
@@ -218,44 +265,60 @@ def main():
     best_val_mse = float("inf")
 
     if args.resume and Path(args.resume).exists():
-        # Resume a v3 checkpoint (already has residual=True baked in)
+        # Resume a v4 checkpoint
         ckpt = torch.load(args.resume, map_location=device)
-        base_filters = ckpt.get("args", {}).get("base_filters", 16)
-        model = UNet(base_filters=base_filters, residual=True).to(device)
+        saved_args = ckpt.get("args", {})
+        base_filters = saved_args.get("base_filters", 16)
+        use_gc = saved_args.get("global_context", args.global_context)
+        model = UNet(
+            base_filters=base_filters, residual=True,
+            use_global_context=use_gc,
+        ).to(device)
         model.load_state_dict(ckpt["model"])
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch  = ckpt["epoch"] + 1
         best_val_mse = ckpt.get("best_val_mse", float("inf"))
-        print(f"Resumed v3 training from {args.resume}  (epoch {ckpt['epoch']})\n")
+        print(f"Resumed v4 training from {args.resume}  (epoch {ckpt['epoch']})\n")
     else:
-        # Warm-start from a sigmoid checkpoint (best_extended.pt or best.pt).
-        # Sigmoid and Tanh share the same parameter space near 0 — weights
-        # transfer cleanly; the first epoch recalibrates the output scale.
+        # Warm-start from best.pt (sigmoid, non-residual).
+        # strict=False: missing GlobalContextEncoder keys initialise randomly;
+        # output activation mismatch (sigmoid vs tanh) is parameter-free, so
+        # the weight transfer is clean.
         if not Path(args.init_checkpoint).exists():
             raise FileNotFoundError(f"Init checkpoint not found: {args.init_checkpoint}")
         init_ckpt    = torch.load(args.init_checkpoint, map_location=device)
         base_filters = init_ckpt.get("args", {}).get("base_filters", 16)
-        model = UNet(base_filters=base_filters, residual=True).to(device)
-        # strict=False: out_conv weight shapes match but activation layer has no params,
-        # so load is clean regardless.
+        model = UNet(
+            base_filters=base_filters, residual=True,
+            use_global_context=args.global_context,
+        ).to(device)
         model.load_state_dict(init_ckpt["model"], strict=False)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        print(f"Initialized (residual=True) from {args.init_checkpoint}  "
+        print(f"Initialized (residual=True, global_context={args.global_context}) "
+              f"from {args.init_checkpoint}  "
               f"(epoch {init_ckpt.get('epoch','?')}, "
               f"val MSE {init_ckpt.get('val_mse', 0):.6f})")
         print(f"Model parameters: {count_parameters(model):,}\n")
 
-    criterion = V3Loss(color_weight=args.color_weight).to(device)
+    criterion = V4Loss(
+        w_weighted_l1=args.w_weighted_l1,
+        w_log_l1=args.w_log_l1,
+        w_ssim=args.w_ssim,
+        color_weight=args.color_weight,
+    ).to(device)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=4, min_lr=1e-7
+    # CosineAnnealingWarmRestarts: LR follows a cosine curve, restarting every
+    # T_0 epochs. Avoids plateau-based LR reduction getting stuck early.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=10, eta_min=1e-7
     )
 
     # ── Experiment log ────────────────────────────────────────────────────────
-    log_path   = Path("experiment_log_v3.csv")
+    log_path   = Path("experiment_log_v4.csv")
     log_fields = [
-        "epoch", "train_loss", "train_mse_R", "train_mse_G", "train_mse_B", "train_mse_avg",
+        "epoch", "color_scale",
+        "train_loss", "train_mse_R", "train_mse_G", "train_mse_B", "train_mse_avg",
         "val_loss", "val_mse_R", "val_mse_G", "val_mse_B", "val_mse_avg",
         "lr", "epoch_time_s",
     ]
@@ -266,9 +329,9 @@ def main():
         log_writer.writeheader()
 
     # ── Column header ─────────────────────────────────────────────────────────
-    W = 110
+    W = 120
     print("─" * W)
-    print(f"{'Ep':>4} │ {'TrainLoss':>10} {'Tr_MSE':>8} │"
+    print(f"{'Ep':>4} │ {'CScale':>6} │ {'TrainLoss':>10} {'Tr_MSE':>8} │"
           f" {'ValLoss':>9} {'Va_MSE':>8} │"
           f" {'MSE_R':>8} {'MSE_G':>8} {'MSE_B':>8} │"
           f" {'LR':>8} {'Time':>6}  {'ETA':>8}")
@@ -279,11 +342,20 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         t0 = time.time()
 
+        # Staged ColorLoss: 0 for first color_warmup_epochs, then linear ramp
+        # over the next color_warmup_epochs until it reaches 1.0.
+        # Example with warmup=5: ep1-5 → 0, ep6→0.2, ep7→0.4, ..., ep10→1.0
+        wu = args.color_warmup_epochs
+        color_scale = max(0.0, min(1.0, (epoch - wu) / max(1, wu)))
+        criterion.set_color_scale(color_scale)
+
         train_loss, tr_cmse = run_epoch(
-            model, train_loader, criterion, optimizer, device, is_train=True
+            model, train_loader, criterion, optimizer, device,
+            is_train=True, use_global_context=args.global_context,
         )
         val_loss, val_cmse = run_epoch(
-            model, val_loader, criterion, optimizer, device, is_train=False
+            model, val_loader, criterion, optimizer, device,
+            is_train=False, use_global_context=args.global_context,
         )
 
         elapsed = time.time() - t0
@@ -292,37 +364,43 @@ def main():
         eta_str = f"{eta_s/3600:.1f}h" if eta_s >= 3600 else f"{eta_s/60:.0f}m"
         current_lr = optimizer.param_groups[0]["lr"]
 
-        scheduler.step(val_cmse["avg"])
+        scheduler.step(epoch)  # CosineAnnealingWarmRestarts uses epoch index
 
         print(
             f"{epoch:>4} │"
+            f" {color_scale:>6.2f} │"
             f" {train_loss:>10.6f} {tr_cmse['avg']:>8.6f} │"
             f" {val_loss:>9.6f} {val_cmse['avg']:>8.6f} │"
             f" {val_cmse['R']:>8.6f} {val_cmse['G']:>8.6f} {val_cmse['B']:>8.6f} │"
             f" {current_lr:>8.1e} {elapsed:>5.0f}s  {eta_str:>8}"
         )
 
-        # ── Save checkpoints (v3 names) ───────────────────────────────────────
+        # ── Save checkpoints (v4 names) ───────────────────────────────────────
         ckpt_state = {
             "epoch":        epoch,
             "model":        model.state_dict(),
             "optimizer":    optimizer.state_dict(),
             "val_mse":      val_cmse["avg"],
             "best_val_mse": best_val_mse,
-            "args":         {**vars(args), "base_filters": base_filters},
+            "args": {
+                **vars(args),
+                "base_filters":     base_filters,
+                "global_context":   args.global_context,
+            },
         }
-        torch.save(ckpt_state, ckpt_dir / "last_v3.pt")
+        torch.save(ckpt_state, ckpt_dir / "last_v4.pt")
 
         if val_cmse["avg"] < best_val_mse:
             best_val_mse = val_cmse["avg"]
             ckpt_state["best_val_mse"] = best_val_mse
-            torch.save(ckpt_state, ckpt_dir / "best_v3.pt")
+            torch.save(ckpt_state, ckpt_dir / "best_v4.pt")
             print(f"       ↳ new best  val MSE: {best_val_mse:.6f}"
-                  f"  → saved to {ckpt_dir}/best_v3.pt")
+                  f"  → saved to {ckpt_dir}/best_v4.pt")
 
         # ── Log ───────────────────────────────────────────────────────────────
         log_writer.writerow({
             "epoch":         epoch,
+            "color_scale":   f"{color_scale:.2f}",
             "train_loss":    f"{train_loss:.6f}",
             "train_mse_R":   f"{tr_cmse['R']:.6f}",
             "train_mse_G":   f"{tr_cmse['G']:.6f}",
@@ -340,15 +418,15 @@ def main():
 
     log_file.close()
     print("─" * W)
-    print(f"\nv3 training complete.")
+    print(f"\nv4 training complete.")
     print(f"  Best val MSE avg:  {best_val_mse:.6f}")
-    print(f"  Best checkpoint:   {ckpt_dir}/best_v3.pt")
-    print(f"  Last checkpoint:   {ckpt_dir}/last_v3.pt")
+    print(f"  Best checkpoint:   {ckpt_dir}/best_v4.pt")
+    print(f"  Last checkpoint:   {ckpt_dir}/last_v4.pt")
     print(f"  Experiment log:    {log_path}\n")
     print("Next steps:")
     print("  python enhance.py --input night.jpg --reference day.jpg "
-          "--checkpoint checkpoints/best_v3.pt")
-    print("  # Visual check: open enhanced_night.jpg — look for blue sky, natural greens")
+          "--checkpoint checkpoints/best_v4.pt")
+    print("  # Compare streetlamp pixels vs enhanced_night_v3.jpg")
 
 
 if __name__ == "__main__":
