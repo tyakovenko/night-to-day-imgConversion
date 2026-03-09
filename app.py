@@ -1,9 +1,6 @@
 """
 Gradio UI — Low-Light to Day Image Enhancement
 Hosted at: huggingface.co/spaces/tyakovenko/night-to-day-enhancement
-
-Model: U-Net (base_filters=16), trained on Transient Attributes Dataset.
-Checkpoint: tyakovenko/night-to-day-enhancement-model / best.pt
 """
 
 import numpy as np
@@ -14,52 +11,54 @@ from huggingface_hub import hf_hub_download
 from skimage.metrics import structural_similarity as ssim_fn
 from model import UNet
 
-MODEL_REPO = "tyakovenko/night-to-day-enhancement-model"
+# ── Model registry ─────────────────────────────────────────────────────────────
 
-# Lazy model state — loaded on first inference request, not at import time.
-# This prevents a DNS/network failure during Space container init from
-# crashing the app before the UI even starts.
-_model = None
-_model_loaded = False
-_model_attempted = False
+MODEL_OPTIONS = {
+    "v1 — best.pt  (Transient Attributes, MSE)":          ("tyakovenko/night-to-day-enhancement-model",    "best.pt"),
+    "v1-extended — best_extended.pt  (TA + LOL, MSE)":    ("tyakovenko/night-to-day-enhancement-model",    "best_extended.pt"),
+    "v2 — best_v2.pt  (TA + LOL, L1 + MS-SSIM)":         ("tyakovenko/night-to-day-enhancement-model-v2", "best_v2.pt"),
+}
+DEFAULT_MODEL = "v1-extended — best_extended.pt  (TA + LOL, MSE)"
+
+# Cache loaded models by display name so switching is instant after first load
+_model_cache: dict = {}  # name → model | None
 
 
-def get_model():
-    """Load model on first call; return cached instance on subsequent calls."""
-    global _model, _model_loaded, _model_attempted
-    if _model_attempted:
-        return _model, _model_loaded
-    _model_attempted = True
+def get_model(model_name: str):
+    """Load model on first call for a given name; return cached instance after."""
+    if model_name in _model_cache:
+        return _model_cache[model_name]
+
+    repo_id, filename = MODEL_OPTIONS[model_name]
     try:
-        ckpt_path = hf_hub_download(repo_id=MODEL_REPO, filename="best.pt", repo_type="model")
+        ckpt_path = hf_hub_download(repo_id=repo_id, filename=filename, repo_type="model")
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         base_filters = ckpt.get("args", {}).get("base_filters", 16)
         model = UNet(base_filters=base_filters)
         model.load_state_dict(ckpt["model"])
         model.eval()
-        print(f"Model loaded from {MODEL_REPO} "
-              f"(epoch {ckpt.get('epoch', '?')}, val MSE {ckpt.get('val_mse', 0):.4f})")
-        _model, _model_loaded = model, True
+        print(f"Loaded {filename} from {repo_id} "
+              f"(epoch {ckpt.get('epoch','?')}, val MSE {ckpt.get('val_mse', 0):.4f})")
+        _model_cache[model_name] = model
     except Exception as e:
-        print(f"Model load failed: {e}")
-        _model, _model_loaded = None, False
-    return _model, _model_loaded
+        print(f"Model load failed [{model_name}]: {e}")
+        _model_cache[model_name] = None
+
+    return _model_cache[model_name]
 
 
 # ── Metrics ────────────────────────────────────────────────────────────────────
 
 def compute_metrics(pred: np.ndarray, ref: np.ndarray) -> dict:
     """
-    Compute all evaluation metrics between enhanced image and reference.
+    Channel-wise MSE and SSIM between enhanced image and reference.
 
     Args:
         pred: HWC uint8 enhanced image
         ref:  HWC uint8 reference (day) image — must match pred shape
-
-    Returns dict with keys: mse, mse_r, mse_g, mse_b, ssim, fid_note
     """
     if pred.shape != ref.shape:
-        return {k: "shape mismatch" for k in ("mse", "mse_r", "mse_g", "mse_b", "ssim", "fid_note")}
+        return {k: "shape mismatch" for k in ("mse", "mse_r", "mse_g", "mse_b", "ssim")}
 
     # Float64 in [0, 1] for numerical accuracy
     p = pred.astype(np.float64) / 255.0
@@ -70,18 +69,14 @@ def compute_metrics(pred: np.ndarray, ref: np.ndarray) -> dict:
     mse_b = float(np.mean((p[:, :, 2] - r[:, :, 2]) ** 2))
     mse   = (mse_r + mse_g + mse_b) / 3.0
 
-    # SSIM over full image (multichannel)
     ssim_val = ssim_fn(p, r, data_range=1.0, channel_axis=2)
 
     return {
-        "mse":      mse,
-        "mse_r":    mse_r,
-        "mse_g":    mse_g,
-        "mse_b":    mse_b,
-        "ssim":     float(ssim_val),
-        # FID is a dataset-level metric (requires 50+ image pairs and InceptionV3 features).
-        # It cannot be meaningfully computed on a single image pair.
-        "fid_note": "N/A — FID requires a batch of images (dataset-level metric)",
+        "mse":   mse,
+        "mse_r": mse_r,
+        "mse_g": mse_g,
+        "mse_b": mse_b,
+        "ssim":  float(ssim_val),
     }
 
 
@@ -90,8 +85,7 @@ def compute_metrics(pred: np.ndarray, ref: np.ndarray) -> dict:
 def pad_to_multiple(t: torch.Tensor, multiple: int = 16):
     """
     Pad a 1CHW tensor so H and W are divisible by `multiple`.
-    Uses reflect padding (bottom/right only) so border pixels mirror real image
-    content. Returns (padded_tensor, (h_orig, w_orig)) for exact crop-back.
+    Reflect-pads bottom/right only; returns (padded_tensor, (h_orig, w_orig)).
     """
     _, _, h, w = t.shape
     pad_h = (multiple - h % multiple) % multiple
@@ -101,59 +95,49 @@ def pad_to_multiple(t: torch.Tensor, multiple: int = 16):
     return t, (h, w)
 
 
-def enhance_image(input_img: np.ndarray) -> np.ndarray:
+def enhance_image(input_img: np.ndarray, model_name: str) -> tuple:
     """
     Run U-Net enhancement at full resolution.
     Falls back to gamma brightening if model failed to load.
+    Returns (enhanced_np, status_str).
     """
     if input_img is None:
-        return None
+        return None, "No input image."
 
-    model, model_loaded = get_model()
-    if model_loaded and model is not None:
+    model = get_model(model_name)
+
+    if model is not None:
         t = torch.from_numpy(
             input_img.astype(np.float32) / 255.0
         ).permute(2, 0, 1).unsqueeze(0)          # 1CHW
 
-        # U-Net has 4 MaxPool layers → H and W must be divisible by 16.
-        # Reflect-pad, run inference, then crop back to original dimensions.
         t, (h_orig, w_orig) = pad_to_multiple(t, multiple=16)
         with torch.no_grad():
             out = model(t)
         out = out[:, :, :h_orig, :w_orig]
 
-        result = out.squeeze(0).permute(1, 2, 0).numpy()  # HWC
-        return (np.clip(result, 0, 1) * 255).astype(np.uint8)
-
+        result = out.squeeze(0).permute(1, 2, 0).numpy()
+        enhanced = (np.clip(result, 0, 1) * 255).astype(np.uint8)
+        status = f"✅ {model_name}"
     else:
-        # Fallback: gamma brightening
         arr = input_img.astype(np.float32) / 255.0
-        brightened = np.power(np.clip(arr, 0, 1), 0.5)
-        return (brightened * 255).astype(np.uint8)
+        enhanced = (np.power(np.clip(arr, 0, 1), 0.5) * 255).astype(np.uint8)
+        status = f"⚠️ Model unavailable ({model_name}) — showing gamma-brightened placeholder"
+
+    return enhanced, status
 
 
 # ── Main handler ───────────────────────────────────────────────────────────────
 
-def run(input_img, ref_img):
-    """
-    Called by Gradio on submit.
-    Returns: enhanced_img, mse_str, mse_r_str, mse_g_str, mse_b_str, ssim_str, fid_str, status_str
-    """
+def run(input_img, ref_img, model_name):
+    """Called by Gradio on submit."""
     if input_img is None:
-        empty = ("—",) * 6
-        return None, *empty, "⚠️ Please upload a low-light input image."
+        return None, "—", "—", "—", "—", "—", "⚠️ Please upload a low-light input image."
 
-    enhanced = enhance_image(input_img)
-
-    _, model_loaded = get_model()
-    model_status = (
-        "✅ U-Net loaded (epoch 22, val MSE 0.0290) — tyakovenko/night-to-day-enhancement-model"
-        if model_loaded
-        else "⚠️ Model unavailable — showing gamma-brightened placeholder"
-    )
+    enhanced, status = enhance_image(input_img, model_name)
 
     if ref_img is None:
-        return enhanced, "—", "—", "—", "—", "—", "—", model_status + " | Upload reference image to compute metrics."
+        return enhanced, "—", "—", "—", "—", "—", status + " | Upload a reference image to compute metrics."
 
     metrics = compute_metrics(enhanced, ref_img)
 
@@ -167,8 +151,7 @@ def run(input_img, ref_img):
         fmt(metrics["mse_g"]),
         fmt(metrics["mse_b"]),
         fmt(metrics["ssim"]),
-        metrics["fid_note"],
-        model_status,
+        status,
     )
 
 
@@ -193,6 +176,11 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
     with gr.Row():
         # ── Left column: inputs ───────────────────────────────────────────────
         with gr.Column(scale=1):
+            model_dropdown = gr.Dropdown(
+                choices=list(MODEL_OPTIONS.keys()),
+                value=DEFAULT_MODEL,
+                label="Model",
+            )
             input_img = gr.Image(
                 label="Input — Low-Light Image",
                 type="numpy",
@@ -217,28 +205,26 @@ with gr.Blocks(css=CSS, title="Low-Light Enhancement") as demo:
     # ── Metrics row ───────────────────────────────────────────────────────────
     gr.Markdown("### Evaluation Metrics")
     gr.Markdown(
-        "_Requires a reference image. All MSE values are in [0, 1] scale (float64). "
-        "SSIM ranges from -1 to 1 (higher = better). "
-        "FID is a dataset-level metric and cannot be computed for a single image pair._"
+        "_Requires a reference image. MSE values are in [0, 1] scale (float64). "
+        "SSIM ranges from -1 to 1 (higher is better)._"
     )
 
     with gr.Row():
-        mse_out    = gr.Textbox(label="MSE (avg)",        elem_classes="metric-box", interactive=False)
-        ssim_out   = gr.Textbox(label="SSIM",             elem_classes="metric-box", interactive=False)
-        fid_out    = gr.Textbox(label="FID",              elem_classes="metric-box", interactive=False)
+        mse_out   = gr.Textbox(label="MSE (avg)",       elem_classes="metric-box", interactive=False)
+        ssim_out  = gr.Textbox(label="SSIM",            elem_classes="metric-box", interactive=False)
 
     with gr.Row():
-        mse_r_out  = gr.Textbox(label="MSE — R channel",  elem_classes="metric-box", interactive=False)
-        mse_g_out  = gr.Textbox(label="MSE — G channel",  elem_classes="metric-box", interactive=False)
-        mse_b_out  = gr.Textbox(label="MSE — B channel",  elem_classes="metric-box", interactive=False)
+        mse_r_out = gr.Textbox(label="MSE — R channel", elem_classes="metric-box", interactive=False)
+        mse_g_out = gr.Textbox(label="MSE — G channel", elem_classes="metric-box", interactive=False)
+        mse_b_out = gr.Textbox(label="MSE — B channel", elem_classes="metric-box", interactive=False)
 
     status_bar = gr.Markdown("", elem_id="status-bar")
 
     # ── Wire up ───────────────────────────────────────────────────────────────
     enhance_btn.click(
         fn=run,
-        inputs=[input_img, ref_img],
-        outputs=[output_img, mse_out, mse_r_out, mse_g_out, mse_b_out, ssim_out, fid_out, status_bar],
+        inputs=[input_img, ref_img, model_dropdown],
+        outputs=[output_img, mse_out, mse_r_out, mse_g_out, mse_b_out, ssim_out, status_bar],
     )
 
     # ── Examples ─────────────────────────────────────────────────────────────
