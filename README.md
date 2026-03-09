@@ -230,4 +230,4 @@ GlobalContextEncoder: [mean_R, mean_G, mean_B, std_R, std_G, std_B, p10_R, p10_G
 | `low_light_manifest.csv` | 1,176 TA training pairs |
 | `extended_manifest.csv` | 1,676 combined pairs (TA + LOL) |
 | `model-comparison.md` | Full metric comparison + enhanced output images for all versions |
-| `v4Plan.md` | v4 improvement roadmap and design decisions |
+| `report.md` | Full report summarizing the application |
