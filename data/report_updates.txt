@@ -1,0 +1,71 @@
+## 8. Alternate Models (v2, v3, v4)
+
+Following the baseline models, three alternative architectures losses were explored. 
+
+### 8.1 Model v2 — Perceptual Loss
+**Checkpoint:** `best_v2.pt` · Epoch 10 · Val MSE 0.028914  
+**Architecture:** UNet(base_filters=16)  
+**Loss:** L1 + MS-SSIM
+
+Instead of optimizing raw pixel values (L2), v2 optimizes structural similarity. The eval MSE was worse (0.0443), but structural fidelity improved over L1 alone. Outputs still tended to be desaturated.
+
+### 8.2 Model v3 — Residual + Color-Aware
+**Checkpoint:** `best_v3.pt` · Epoch 18 · Val MSE 0.050844  
+**Architecture:** UNet(base_filters=16, residual=True)  
+**Loss:** CombinedLoss (L1 + MS-SSIM) + 0.5 × ColorLoss (BT.601 YCbCr)
+
+To fix the desaturated outputs, v3 introduced a `residual=True` design: predicting a Tanh delta to add to the input image, maintaining the original color profile better. A ColorLoss scaling chrominance errors by 2× forced better color temperature matching. A major flaw appeared: streetlamp amplification, as the model was rewarded for keeping bright pixels bright.
+
+### 8.3 Model v4 — Lamp Suppression + Global Context
+**Checkpoint:** `best_v4.pt` · Epoch 25 · Val MSE 0.028453  
+**Architecture:** UNet(base_filters=16, residual=True, use_global_context=True)  
+**Loss:** WeightedL1 + LogL1 + MS-SSIM + ColorLoss
+
+To solve lamp amplification, v4 introduced:
+- **WeightedL1:** Bright areas (like lamps) contribute near-zero gradient (`weight = 1 - clamp(Y_night, 0, 1)`).
+- **LogL1:** Compresses bright-pixel errors.
+- **Global Context:** Injecting whole-image statistics (mean, std, p10) at the U-Net bottleneck.
+
+Val MSE matched v1 (0.028453 vs 0.028953). Eval MSE on `night.jpg` is higher (0.0477) than baseline, primarily because lamp pixels are purposefully suppressed and diverge from the target.
+
+---
+
+## 9. Comprehensive Results and Inference
+
+### 9.1 Summary of Model Metrics
+
+| Target | Model | Epoch | Val MSE avg | Eval Pair MSE | Eval Pair SSIM |
+|---|---|---|---|---|---|
+| Baseline | **v1** | 22 | 0.028953 | **0.038925** | **0.5329** |
+| Fine-tune | **v1-extended** | 19 | **0.027752** | 0.043132 | 0.4653 |
+| Structure | **v2** | 10 | 0.028914 | 0.044275 | 0.4448 |
+| Color / Residual | **v3** | 18 | 0.050844 | 0.046135 | 0.2871 |
+| Context / Suppress | **v4** | 25 | 0.028453 | 0.047700 | 0.3095 |
+
+*Note: SSIM on v3/v4 is lower because residual shift changes local contrast patterns, penalizing structural similarity despite better perceptual color.*
+
+### 9.2 Visual Comparisons
+The below panel shows the progressive evolution of the model on the primary evaluation pair `night.jpg` / `day.jpg`.
+
+#### Original Inputs
+| Input (Night) | Reference (Day GT) |
+|:--:|:--:|
+| ![Night Image](night.jpg) | ![Day Target](day.jpg) |
+
+#### Enhanced Outputs By Model
+| v1 (Baseline MSE) | v1-extended (LOL Fine-tune) |
+|:--:|:--:|
+| ![v1 Output](enhanced_night_v1.jpg) | ![v1-extended Output](enhanced_night_v1_extended.jpg) |
+| Low MSE, preserves structure | Generalizes indoor data to outdoor |
+
+| v2 (Perceptual Loss) | v3 (Residual + Color-Aware) |
+|:--:|:--:|
+| ![v2 Output](enhanced_night_v2.jpg) | ![v3 Output](enhanced_night_v3.jpg) |
+| Good structure, desaturated | Color correctness, but streetlamp amplification |
+
+| v4 (Lamp Suppression + Context) | 
+|:--:|
+| ![v4 Output](enhanced_night_v4.jpg) |
+| Suppressed lamps, better global color |
+
+---

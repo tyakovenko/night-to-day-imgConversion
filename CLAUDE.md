@@ -183,4 +183,4 @@ Risk: LOL is indoor — fine-tune only after Transient Attributes training, or w
 - Cite all third-party code with `# SOURCE: <url>` comments
 
 ## Session State
-# Maintained automatically by Scribe in ./project-log.md
+# Maintained automatically by Scribe in ./_claude/project-log.md
