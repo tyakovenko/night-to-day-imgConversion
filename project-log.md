@@ -223,3 +223,9 @@ Best checkpoint: epoch 18, val MSE **0.050844**
 - **Visual quality check**: open `enhanced_night_v3.jpg` — does it show blue sky and natural greens vs. v1's gray output?
 - **Potential next iteration**: if color is fixed but MSE is too high, try staged training — warm-start for 10+ epochs at lower LR before adding ColorLoss, then fine-tune with it
 - **HF Space**: push updated `app.py` to Space repo so v3 appears in the live dropdown
+
+**Fixes applied post-deployment**
+- `model.py` pushed to HF Space (was missing — old version without `residual` flag caused silent `TypeError` for all models, all falling back to gamma placeholder; identical output for every dropdown choice)
+- Status bar moved to directly below model dropdown (was at bottom of page)
+- Examples section removed
+- Gradio 6.0 fix: `css` moved from `gr.Blocks()` to `launch()` (was causing Space restart loop)
